@@ -1,0 +1,255 @@
+"use client"
+
+import { use } from "react" // Import 'use' for Next.js 15 params
+import { motion } from "framer-motion"
+import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare } from "lucide-react"
+
+// --- IMPROVED GRAPH WIDGET (The Fix) ---
+// --- ULTRA-PREMIUM GRAPH WIDGET ---
+const GraphWidget = () => {
+  return (
+    <div className="w-full h-[600px] bg-[#050505] border-y border-[#333] relative overflow-hidden group select-none">
+      
+      {/* 1. LAYER: TECHNICAL GRID & RADAR */}
+      <div className="absolute inset-0 opacity-20 pointer-events-none" 
+           style={{ backgroundImage: 'linear-gradient(#222 1px, transparent 1px), linear-gradient(90deg, #222 1px, transparent 1px)', backgroundSize: '40px 40px' }} 
+      />
+      {/* Rotating Radar Sweep */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,59,0,0.1)_360deg)] animate-[spin_4s_linear_infinite] rounded-full pointer-events-none" />
+
+      {/* 2. LAYER: SVG CONNECTIONS (DATA PIPES) */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none">
+        <defs>
+          <linearGradient id="line-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#333" />
+            <stop offset="50%" stopColor="#666" />
+            <stop offset="100%" stopColor="#333" />
+          </linearGradient>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="2.5" orient="auto" markerUnits="strokeWidth">
+             <path d="M0,0 L5,2.5 L0,5" fill="#555" />
+          </marker>
+        </defs>
+
+        {/* Path to Node 1 (Top Left) */}
+        <motion.path 
+            d="M50% 50% L50% 30% L30% 30%" 
+            fill="none" stroke="#333" strokeWidth="1" 
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.5 }}
+        />
+        {/* Data Packet Animation 1 */}
+        <circle r="2" fill="#FFF">
+            <animateMotion repeatCount="indefinite" dur="3s" keyPoints="0;1" keyTimes="0;1">
+                <mpath href="#path1" />
+            </animateMotion>
+        </circle>
+        <path id="path1" d="M 700 300 L 700 180 L 420 180" fill="none" /> {/* Hardcoded approximates for SVG coord layout */}
+
+        {/* Path to Node 2 (Bottom Right) */}
+        <motion.path 
+            d="M50% 50% L50% 70% L70% 70%" 
+            fill="none" stroke="#333" strokeWidth="1" 
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.7 }}
+        />
+        
+        {/* Path to Node 3 (Top Right) */}
+        <motion.path 
+            d="M50% 50% L80% 50% L80% 30%" 
+            fill="none" stroke="#333" strokeWidth="1" 
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.9 }}
+        />
+      </svg>
+
+      {/* 3. LAYER: INTERACTIVE NODES */}
+      
+      {/* CENTER: MALWARE HOST */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 group/center">
+          <div className="relative">
+              <div className="absolute inset-0 bg-[#FF3B00] blur-xl opacity-20 animate-pulse"></div>
+              <div className="w-20 h-20 border border-[#FF3B00] bg-[#0A0A0A] flex items-center justify-center relative">
+                  <div className="w-1 h-1 bg-[#FF3B00] absolute top-1 left-1"></div>
+                  <div className="w-1 h-1 bg-[#FF3B00] absolute top-1 right-1"></div>
+                  <div className="w-1 h-1 bg-[#FF3B00] absolute bottom-1 left-1"></div>
+                  <div className="w-1 h-1 bg-[#FF3B00] absolute bottom-1 right-1"></div>
+                  <TerminalSquare className="text-[#FF3B00] w-8 h-8 animate-pulse" />
+              </div>
+              <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-max text-center">
+                  <div className="text-[9px] font-mono text-[#FF3B00] tracking-[0.3em] bg-[#121212] px-2 py-1 border border-[#FF3B00]/30">HOST: ARTIFACT.EXE</div>
+              </div>
+          </div>
+      </div>
+
+      {/* NODE 1: C2 SERVER (Russia) */}
+      <motion.div 
+          className="absolute top-[30%] left-[30%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
+          initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1 }}
+      >
+          <div className="flex flex-col items-center cursor-pointer">
+              <div className="w-12 h-12 bg-[#121212] border border-gray-600 group-hover/node:border-white transition-colors flex items-center justify-center rounded-full relative">
+                  <Globe className="w-5 h-5 text-gray-400 group-hover/node:text-white" />
+                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-[#121212]"></div>
+              </div>
+              <div className="mt-4 bg-[#121212]/90 border border-gray-700 p-3 backdrop-blur-md opacity-0 group-hover/node:opacity-100 transition-opacity absolute top-12 w-48 z-50 pointer-events-none">
+                  <div className="flex justify-between items-center mb-2 border-b border-gray-700 pb-1">
+                      <span className="text-[9px] text-gray-400 font-bold">185.192.69.14</span>
+                      <span className="text-[9px] text-red-500 font-mono">MALICIOUS</span>
+                  </div>
+                  <div className="space-y-1 font-mono text-[9px] text-gray-500">
+                      <div className="flex justify-between"><span>ASN:</span><span className="text-gray-300">AS44050</span></div>
+                      <div className="flex justify-between"><span>GEO:</span><span className="text-gray-300">Moscow, RU</span></div>
+                      <div className="flex justify-between"><span>PROTO:</span><span className="text-gray-300">TCP/443 (HTTPS)</span></div>
+                  </div>
+              </div>
+          </div>
+      </motion.div>
+
+      {/* NODE 2: DROP ZONE (USA) */}
+      <motion.div 
+          className="absolute top-[70%] left-[70%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
+          initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.2 }}
+      >
+          <div className="flex flex-col items-center cursor-pointer">
+              <div className="w-10 h-10 bg-[#121212] border border-blue-500/50 group-hover/node:border-blue-400 transition-colors flex items-center justify-center transform rotate-45">
+                  <div className="transform -rotate-45">
+                    <Cpu className="w-4 h-4 text-blue-400" />
+                  </div>
+              </div>
+               {/* Metadata Tooltip */}
+              <div className="mt-4 bg-[#121212]/90 border border-gray-700 p-3 backdrop-blur-md opacity-0 group-hover/node:opacity-100 transition-opacity absolute top-10 w-40 z-50 pointer-events-none">
+                  <div className="text-[9px] text-blue-400 font-bold mb-1 border-b border-gray-700 pb-1">DROPPER URL</div>
+                  <div className="font-mono text-[9px] text-gray-400">cdn-update-sys.net</div>
+              </div>
+          </div>
+      </motion.div>
+
+      {/* NODE 3: REGISTRY PERSISTENCE */}
+      <motion.div 
+          className="absolute top-[30%] left-[80%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
+          initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.4 }}
+      >
+           <div className="flex flex-col items-center cursor-pointer">
+              <div className="w-3 h-3 bg-purple-500 rounded-sm animate-ping absolute opacity-50"></div>
+              <div className="w-8 h-8 bg-[#121212] border border-purple-500 flex items-center justify-center">
+                  <Hash className="w-4 h-4 text-purple-500" />
+              </div>
+              <div className="absolute top-10 text-[9px] font-mono text-purple-500 bg-black px-1 opacity-0 group-hover/node:opacity-100 transition-opacity">REGISTRY_MOD</div>
+           </div>
+      </motion.div>
+
+      {/* 4. LAYER: HUD OVERLAY */}
+      <div className="absolute top-6 left-6 font-mono text-[10px] text-gray-500">
+          <div className="flex gap-4">
+              <div>ZOOM: 100%</div>
+              <div>NODES: 4</div>
+              <div>EDGES: 3</div>
+          </div>
+      </div>
+      <div className="absolute bottom-6 left-6 font-mono text-[10px] text-[#FF3B00] animate-pulse">
+          LIVE_FEED :: CAPTURING_PACKETS
+      </div>
+      
+      {/* Decorative Crosshairs */}
+      <div className="absolute top-0 left-1/2 h-4 w-px bg-gray-800"></div>
+      <div className="absolute bottom-0 left-1/2 h-4 w-px bg-gray-800"></div>
+      <div className="absolute left-0 top-1/2 w-4 h-px bg-gray-800"></div>
+      <div className="absolute right-0 top-1/2 w-4 h-px bg-gray-800"></div>
+
+    </div>
+  )
+}
+
+// --- MAIN PAGE COMPONENT ---
+export default function ReportPage({ params }: { params: Promise<{ id: string }> }) {
+  // UNWRAP PARAMS safely
+  const resolvedParams = use(params)
+  const threatScore = 92
+  
+  const iocs = [
+    { type: "IPv4", val: "185.192.69.14 (RU)", tag: "C2_SERVER" },
+    { type: "DOMAIN", val: "update-sys-kernel.net", tag: "DNS_BEACON" },
+    { type: "MUTEX", val: "\\BaseNamedObjects\\Global\\XdJ8_sP", tag: "SINGLE_INSTANCE" },
+    { type: "REGISTRY", val: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\UpdateMgr", tag: "PERSISTENCE" },
+    { type: "STRING", val: "powershell -enc JABsAD0AJw...", tag: "OBFUSCATED_CMD" },
+  ]
+
+  return (
+    <div className="min-h-screen bg-[#F5F5F3] text-[#121212] font-sans pb-20">
+      {/* TOOLBAR */}
+      <header className="sticky top-0 bg-[#F5F5F3]/90 backdrop-blur-md border-b border-gray-200 px-8 py-4 z-40 flex justify-between items-center">
+        <div className="flex items-center gap-4 font-mono text-xs">
+            <span className="text-gray-400 uppercase tracking-wider">JOB ID: {resolvedParams.id}</span>
+            <span className="px-3 py-1 bg-[#121212] text-[#FF3B00] font-bold rounded-sm uppercase tracking-widest">MALICIOUS</span>
+        </div>
+        <div className="flex gap-4">
+            <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Download size={14}/> EXPORT PDF</button>
+            <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Share2 size={14}/> SHARE INTEL</button>
+        </div>
+      </header>
+
+      <main className="max-w-[1400px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
+        
+        {/* COL 1: VERDICT & SCORE */}
+        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="lg:col-span-4 bg-white p-8 border border-gray-200 shadow-xl shadow-gray-200/30 flex flex-col justify-between h-[600px]">
+            <div>
+                <ShieldAlert className="w-16 h-16 text-[#121212] mb-8" />
+                <h2 className="text-xs font-bold tracking-[0.3em] text-gray-400 uppercase mb-4">Analysis Verdict</h2>
+                <h1 className="text-5xl font-medium tracking-tight mb-10 leading-tight">High Confidence<br/>Threat Detected.</h1>
+                <div className="space-y-8">
+                    <div>
+                        <div className="flex justify-between text-xs font-mono mb-3 uppercase tracking-wider"><span>Threat Score</span><span className="text-[#FF3B00]">{threatScore}/100</span></div>
+                        <div className="w-full h-2 bg-gray-100"><motion.div initial={{width: 0}} animate={{width: `${threatScore}%`}} transition={{delay: 0.5, duration: 1}} className="h-full bg-[#FF3B00]" /></div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Identified Family</h3><p className="font-mono text-sm">Trojan.Win32.Emotet</p></div>
+                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Attribution</h3><p className="font-mono text-sm">APT-28 (Fancy Bear)</p></div>
+                    </div>
+                </div>
+            </div>
+            <div className="pt-6 border-t border-gray-100"><p className="text-xs text-gray-500 font-mono leading-relaxed">EXECUTIVE SUMMARY: The submitted artifact (invoice_scan.exe) is a confirmed malicious loader. It attempts to establish persistence via registry keys and beacons to known C2 infrastructure located in Russia. Recommended action: Isolate affected systems immediately.</p></div>
+        </motion.div>
+
+        {/* COL 2: VISUAL GRAPH & IOCs */}
+        <div className="lg:col-span-8 flex flex-col gap-8">
+             {/* GRAPH */}
+            <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.1 }} className="bg-white border border-gray-200 shadow-sm">
+                <div className="p-4 border-b border-gray-200 flex justify-between items-center"><h3 className="text-xs font-bold tracking-[0.2em] uppercase">Infrastructure Map</h3><div className="flex gap-2"><span className="w-2 h-2 bg-[#FF3B00] rounded-full animate-pulse"></span><span className="text-[10px] font-mono text-gray-400">LIVE C2 NODE</span></div></div>
+                <GraphWidget />
+            </motion.div>
+
+            {/* IOC TERMINAL */}
+             <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }} className="bg-[#121212] text-white border border-black p-6 font-mono shadow-xl">
+                <div className="flex items-center gap-3 mb-6 pb-4 border-b border-white/20">
+                    <TerminalSquare className="text-[#FF3B00]" size={20}/>
+                    <h3 className="text-xs font-bold tracking-[0.3em] uppercase text-gray-400">Extracted Indicators (IOCs)</h3>
+                </div>
+                <div className="h-64 overflow-y-auto pr-4 space-y-4 scrollbar-thin scrollbar-thumb-[#FF3B00] scrollbar-track-[#333]">
+                    {iocs.map((ioc, i) => (
+                        <div key={i} className="flex flex-col md:flex-row md:items-center justify-between gap-2 pb-2 border-b border-white/10 last:border-0">
+                            <div className="flex items-center gap-4">
+                                <span className="text-[9px] text-[#FF3B00] tracking-widest uppercase w-16">{ioc.type}</span>
+                                <span className="text-sm break-all">{ioc.val}</span>
+                            </div>
+                            <span className="text-[9px] bg-white/10 px-2 py-1 rounded-sm tracking-wider uppercase text-gray-400">{ioc.tag}</span>
+                        </div>
+                    ))}
+                </div>
+             </motion.div>
+        </div>
+
+        {/* FOOTER ROW */}
+        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.3 }} className="lg:col-span-12 grid grid-cols-2 md:grid-cols-4 gap-0 border border-gray-200 bg-white mt-8">
+            <TechDetail icon={Hash} label="SHA-256" value="8a9d21f0...e4b9a2c1" />
+            <TechDetail icon={Cpu} label="Imphash" value="d41d8cd98f00b204e9800998ecf8427e" />
+            <TechDetail icon={FileCode} label="Compile Time" value="2023-10-27 14:22:01 UTC" />
+            <TechDetail icon={Globe} label="MITRE ATT&CK" value="T1060, T1027, T1082" />
+        </motion.div>
+      </main>
+    </div>
+  )
+}
+
+const TechDetail = ({ icon: Icon, label, value }: any) => (
+    <div className="p-6 border-r border-b lg:border-b-0 border-gray-200 last:border-0 hover:bg-gray-50 transition-colors group">
+        <div className="flex items-center gap-3 mb-3 text-gray-400 group-hover:text-[#FF3B00] transition-colors"><Icon size={18} /><span className="text-[10px] font-bold tracking-widest uppercase">{label}</span></div>
+        <p className="font-mono text-xs text-[#121212] break-all">{value}</p>
+    </div>
+)
