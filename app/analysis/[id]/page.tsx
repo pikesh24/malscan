@@ -38,15 +38,47 @@ export default function AnalysisPage({ params }: { params: Promise<{ id: string 
   const [currentStep, setCurrentStep] = useState(0)
 
   // 2. LOGIC FIX: Only update the number here
+  // 2. Real Polling mixed with visual progression
   useEffect(() => {
-    const interval = setInterval(() => {
+    let targetProgress = 10;
+    
+    // Fake the visual progress bar crawling towards the target step
+    const visualInterval = setInterval(() => {
       setProgress(prev => {
-        if (prev >= 100) return 100
-        return prev + 0.8 // Speed of simulation
+        if (prev >= targetProgress) return targetProgress
+        return prev + 0.8
       })
     }, 50)
-    return () => clearInterval(interval)
-  }, [])
+
+    if (resolvedParams.id.includes('demo')) {
+       targetProgress = 100;
+       return () => clearInterval(visualInterval)
+    }
+
+    // Real API polling
+    const pollInterval = setInterval(async () => {
+        try {
+            const res = await fetch(`/api/status/${resolvedParams.id}`)
+            if (res.ok) {
+                const data = await res.json()
+                if (data.status === 'Completed' || data.status === 'Failed') {
+                    targetProgress = 100;
+                } else if (data.status === 'Processing') {
+                    targetProgress = 60;
+                } else if (data.status === 'Submitted') {
+                    targetProgress = 20;
+                }
+            }
+        } catch (e) {
+            // Ignore for robust polling
+        }
+    }, 2000)
+
+    return () => {
+        clearInterval(visualInterval)
+        clearInterval(pollInterval)
+    }
+  }, [resolvedParams.id])
 
   // 3. LOGIC FIX: Watch progress for navigation
   useEffect(() => {

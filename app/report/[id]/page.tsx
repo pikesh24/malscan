@@ -1,6 +1,6 @@
 "use client"
 
-import { use } from "react" // Import 'use' for Next.js 15 params
+import { use, useState, useEffect } from "react" 
 import { motion } from "framer-motion"
 import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare } from "lucide-react"
 
@@ -159,9 +159,38 @@ const GraphWidget = () => {
 
 // --- MAIN PAGE COMPONENT ---
 export default function ReportPage({ params }: { params: Promise<{ id: string }> }) {
-  // UNWRAP PARAMS safely
   const resolvedParams = use(params)
-  const threatScore = 92
+  
+  const [reportData, setReportData] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchReport = async () => {
+        try {
+            const res = await fetch(`/api/status/${resolvedParams.id}`)
+            if (res.ok) {
+                const data = await res.json()
+                if (data.status === 'Failed') {
+                     setReportData({ score: 0, verdict: "Failed", reasons: ["Analysis encountered a fatal error. Please check server logs."] })
+                } else {
+                     setReportData(data.results || { score: 92, verdict: "Malicious", reasons: ["Simulated Demo Malicious File"] })
+                }
+            }
+        } catch(e) {
+            console.error(e)
+            setReportData({ score: 92, verdict: "Malicious", reasons: ["Backend Offline - Demo Data"] })
+        } finally {
+            setLoading(false)
+        }
+    }
+    fetchReport()
+  }, [resolvedParams.id])
+
+  if (loading) return <div className="min-h-screen bg-[#F5F5F3] flex items-center justify-center font-mono">LOADING_REPORT...</div>
+
+  const threatScore = reportData?.score || 0
+  const verdict = reportData?.verdict || "Clear"
+  const reasons = reportData?.reasons || []
   
   const iocs = [
     { type: "IPv4", val: "185.192.69.14 (RU)", tag: "C2_SERVER" },
@@ -177,7 +206,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
       <header className="sticky top-0 bg-[#F5F5F3]/90 backdrop-blur-md border-b border-gray-200 px-8 py-4 z-40 flex justify-between items-center">
         <div className="flex items-center gap-4 font-mono text-xs">
             <span className="text-gray-400 uppercase tracking-wider">JOB ID: {resolvedParams.id}</span>
-            <span className="px-3 py-1 bg-[#121212] text-[#FF3B00] font-bold rounded-sm uppercase tracking-widest">MALICIOUS</span>
+            <span className={`px-3 py-1 bg-[#121212] ${verdict === 'Clear' ? 'text-green-500' : 'text-[#FF3B00]'} font-bold rounded-sm uppercase tracking-widest`}>{verdict}</span>
         </div>
         <div className="flex gap-4">
             <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Download size={14}/> EXPORT PDF</button>
@@ -192,7 +221,9 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
             <div>
                 <ShieldAlert className="w-16 h-16 text-[#121212] mb-8" />
                 <h2 className="text-xs font-bold tracking-[0.3em] text-gray-400 uppercase mb-4">Analysis Verdict</h2>
-                <h1 className="text-5xl font-medium tracking-tight mb-10 leading-tight">High Confidence<br/>Threat Detected.</h1>
+                <h1 className="text-5xl font-medium tracking-tight mb-10 leading-tight">
+                    {verdict === 'Clear' ? 'No Threat Detected.' : 'High Confidence Threat Detected.'}
+                </h1>
                 <div className="space-y-8">
                     <div>
                         <div className="flex justify-between text-xs font-mono mb-3 uppercase tracking-wider"><span>Threat Score</span><span className="text-[#FF3B00]">{threatScore}/100</span></div>
@@ -204,7 +235,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                     </div>
                 </div>
             </div>
-            <div className="pt-6 border-t border-gray-100"><p className="text-xs text-gray-500 font-mono leading-relaxed">EXECUTIVE SUMMARY: The submitted artifact (invoice_scan.exe) is a confirmed malicious loader. It attempts to establish persistence via registry keys and beacons to known C2 infrastructure located in Russia. Recommended action: Isolate affected systems immediately.</p></div>
+            <div className="pt-6 border-t border-gray-100"><div className="text-xs text-gray-500 font-mono leading-relaxed">EXECUTIVE SUMMARY: {reasons.map((r: string) => <p key={r}>- {r}</p>)}</div></div>
         </motion.div>
 
         {/* COL 2: VISUAL GRAPH & IOCs */}

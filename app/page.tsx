@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { motion, useScroll, useTransform } from "framer-motion"
 import { UploadCloud, ArrowRight, Cpu, Network, Shield, Zap } from "lucide-react"
@@ -50,8 +50,35 @@ export default function LandingPage() {
     return () => clearInterval(interval)
   }, [])
 
-  const handleUpload = () => {
-    router.push(`/analysis/job-8x9921`)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isUploading, setIsUploading] = useState(false)
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true)
+    const formData = new FormData()
+    formData.append("file", file)
+
+    try {
+      const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData
+      })
+      if (!res.ok) throw new Error("Backend offline or error")
+      const data = await res.json()
+      router.push(`/analysis/${data.job_id}`)
+    } catch (err) {
+      console.error(err)
+      // Fallback Demo Mode if backend is disconnected
+      router.push(`/analysis/job-demo-8x9921`)
+    }
+    setIsUploading(false)
   }
 
   return (
@@ -85,11 +112,12 @@ export default function LandingPage() {
         </motion.div>
 
         {/* UPLOAD MODULE */}
+        <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
         <motion.div 
           style={{ y: yUpload }}
           whileHover={{ scale: 1.01 }}
-          onClick={handleUpload}
-          className="group relative w-full max-w-xl h-40 bg-white border-2 border-[#121212] cursor-pointer overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.1)]"
+          onClick={handleUploadClick}
+          className={`group relative w-full max-w-xl h-40 bg-white border-2 border-[#121212] cursor-pointer overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.1)] ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}
         >
           <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/graphy.png')] opacity-[0.05]"></div>
           <div className="flex flex-col items-center justify-center h-full relative z-10">
