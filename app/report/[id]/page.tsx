@@ -6,7 +6,7 @@ import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSqua
 
 // --- IMPROVED GRAPH WIDGET (The Fix) ---
 // --- ULTRA-PREMIUM GRAPH WIDGET ---
-const GraphWidget = () => {
+const GraphWidget = ({ threatScore }: { threatScore: number }) => {
   return (
     <div className="w-full h-[600px] bg-[#050505] border-y border-[#333] relative overflow-hidden group select-none">
       
@@ -139,13 +139,13 @@ const GraphWidget = () => {
       <div className="absolute top-6 left-6 font-mono text-[10px] text-gray-500">
           <div className="flex gap-4">
               <div>ZOOM: 100%</div>
-              <div>NODES: 4</div>
-              <div>EDGES: 3</div>
           </div>
       </div>
-      <div className="absolute bottom-6 left-6 font-mono text-[10px] text-[#FF3B00] animate-pulse">
-          LIVE_FEED :: CAPTURING_PACKETS
-      </div>
+      {threatScore > 0 && (
+        <div className="absolute bottom-6 left-6 font-mono text-[10px] text-[#FF3B00] animate-pulse">
+            LIVE_FEED :: CAPTURING_PACKETS
+        </div>
+      )}
       
       {/* Decorative Crosshairs */}
       <div className="absolute top-0 left-1/2 h-4 w-px bg-gray-800"></div>
@@ -191,13 +191,17 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
   const threatScore = reportData?.score || 0
   const verdict = reportData?.verdict || "Clear"
   const reasons = reportData?.reasons || []
-  
+  const family = reportData?.family || "Unknown"
+  const attribution = reportData?.attribution || "Unattributed"
+  const fileHash = reportData?.file_hash || "N/A"
+  const imphash = reportData?.imphash || "N/A"
+
+  // Build IOC rows from real backend data
+  const indicators = reportData?.indicators || {}
   const iocs = [
-    { type: "IPv4", val: "185.192.69.14 (RU)", tag: "C2_SERVER" },
-    { type: "DOMAIN", val: "update-sys-kernel.net", tag: "DNS_BEACON" },
-    { type: "MUTEX", val: "\\BaseNamedObjects\\Global\\XdJ8_sP", tag: "SINGLE_INSTANCE" },
-    { type: "REGISTRY", val: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\UpdateMgr", tag: "PERSISTENCE" },
-    { type: "STRING", val: "powershell -enc JABsAD0AJw...", tag: "OBFUSCATED_CMD" },
+    ...(indicators.ips  || []).map((v: string) => ({ type: "IPv4",   val: v, tag: "EXTRACTED" })),
+    ...(indicators.urls || []).map((v: string) => ({ type: "URL",    val: v, tag: "EXTRACTED" })),
+    ...(indicators.domains || []).map((v: string) => ({ type: "DOMAIN", val: v, tag: "EXTRACTED" })),
   ]
 
   return (
@@ -206,10 +210,21 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
       <header className="sticky top-0 bg-[#F5F5F3]/90 backdrop-blur-md border-b border-gray-200 px-8 py-4 z-40 flex justify-between items-center">
         <div className="flex items-center gap-4 font-mono text-xs">
             <span className="text-gray-400 uppercase tracking-wider">JOB ID: {resolvedParams.id}</span>
-            <span className={`px-3 py-1 bg-[#121212] ${verdict === 'Clear' ? 'text-green-500' : 'text-[#FF3B00]'} font-bold rounded-sm uppercase tracking-widest`}>{verdict}</span>
+            <span className={`px-3 py-1 font-bold rounded-sm uppercase tracking-widest ${
+              verdict === 'Clear'
+                ? 'bg-green-900 text-green-400'
+                : verdict === 'Suspicious'
+                ? 'bg-amber-900 text-amber-400'
+                : 'bg-red-900 text-[#FF3B00]'
+            }`}>{verdict}</span>
         </div>
         <div className="flex gap-4">
-            <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Download size={14}/> EXPORT PDF</button>
+            <button
+              onClick={() => window.open(`/api/report/${resolvedParams.id}`, '_blank')}
+              className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"
+            >
+              <Download size={14}/> EXPORT PDF
+            </button>
             <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Share2 size={14}/> SHARE INTEL</button>
         </div>
       </header>
@@ -222,7 +237,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                 <ShieldAlert className="w-16 h-16 text-[#121212] mb-8" />
                 <h2 className="text-xs font-bold tracking-[0.3em] text-gray-400 uppercase mb-4">Analysis Verdict</h2>
                 <h1 className="text-5xl font-medium tracking-tight mb-10 leading-tight">
-                    {verdict === 'Clear' ? 'No Threat Detected.' : 'High Confidence Threat Detected.'}
+                    {verdict === 'Clear' ? 'No Threat Detected.' : verdict === 'Suspicious' ? 'Suspicious Activity Detected.' : 'High Confidence Threat Detected.'}
                 </h1>
                 <div className="space-y-8">
                     <div>
@@ -230,8 +245,8 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                         <div className="w-full h-2 bg-gray-100"><motion.div initial={{width: 0}} animate={{width: `${threatScore}%`}} transition={{delay: 0.5, duration: 1}} className="h-full bg-[#FF3B00]" /></div>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
-                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Identified Family</h3><p className="font-mono text-sm">Trojan.Win32.Emotet</p></div>
-                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Attribution</h3><p className="font-mono text-sm">APT-28 (Fancy Bear)</p></div>
+                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Identified Family</h3><p className="font-mono text-sm">{family}</p></div>
+                        <div><h3 className="text-[10px] font-bold text-gray-400 mb-1 uppercase">Attribution</h3><p className="font-mono text-sm">{attribution}</p></div>
                     </div>
                 </div>
             </div>
@@ -243,7 +258,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
              {/* GRAPH */}
             <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.1 }} className="bg-white border border-gray-200 shadow-sm">
                 <div className="p-4 border-b border-gray-200 flex justify-between items-center"><h3 className="text-xs font-bold tracking-[0.2em] uppercase">Infrastructure Map</h3><div className="flex gap-2"><span className="w-2 h-2 bg-[#FF3B00] rounded-full animate-pulse"></span><span className="text-[10px] font-mono text-gray-400">LIVE C2 NODE</span></div></div>
-                <GraphWidget />
+                <GraphWidget threatScore={threatScore} />
             </motion.div>
 
             {/* IOC TERMINAL */}
@@ -253,7 +268,9 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                     <h3 className="text-xs font-bold tracking-[0.3em] uppercase text-gray-400">Extracted Indicators (IOCs)</h3>
                 </div>
                 <div className="h-64 overflow-y-auto pr-4 space-y-4 scrollbar-thin scrollbar-thumb-[#FF3B00] scrollbar-track-[#333]">
-                    {iocs.map((ioc, i) => (
+                    {iocs.length === 0 ? (
+                        <div className="text-gray-500 text-xs tracking-wider py-8 text-center">NO NETWORK INDICATORS EXTRACTED FROM THIS ARTIFACT.</div>
+                    ) : iocs.map((ioc, i) => (
                         <div key={i} className="flex flex-col md:flex-row md:items-center justify-between gap-2 pb-2 border-b border-white/10 last:border-0">
                             <div className="flex items-center gap-4">
                                 <span className="text-[9px] text-[#FF3B00] tracking-widest uppercase w-16">{ioc.type}</span>
@@ -268,10 +285,10 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
 
         {/* FOOTER ROW */}
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.3 }} className="lg:col-span-12 grid grid-cols-2 md:grid-cols-4 gap-0 border border-gray-200 bg-white mt-8">
-            <TechDetail icon={Hash} label="SHA-256" value="8a9d21f0...e4b9a2c1" />
-            <TechDetail icon={Cpu} label="Imphash" value="d41d8cd98f00b204e9800998ecf8427e" />
-            <TechDetail icon={FileCode} label="Compile Time" value="2023-10-27 14:22:01 UTC" />
-            <TechDetail icon={Globe} label="MITRE ATT&CK" value="T1060, T1027, T1082" />
+            <TechDetail icon={Hash} label="SHA-256" value={fileHash} />
+            <TechDetail icon={Cpu} label="Imphash" value={imphash !== 'N/A' ? imphash : 'Not a PE file'} />
+            <TechDetail icon={FileCode} label="Verdict" value={verdict.toUpperCase()} />
+            <TechDetail icon={Globe} label="Score" value={`${threatScore} / 100`} />
         </motion.div>
       </main>
     </div>

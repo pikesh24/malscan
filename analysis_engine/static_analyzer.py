@@ -18,7 +18,8 @@ def extract_iocs(file_path: str) -> dict:
 
     # basic regexes for extraction
     ip_pattern = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')
-    url_pattern = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
+    url_pattern = re.compile(r'https?://[^\s\'"<>\]]+')
+
     
     try:
         # Read file in binary mode but decode with errors='ignore' to find strings

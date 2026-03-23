@@ -44,9 +44,10 @@ def get_geoip(ip_address: str) -> dict:
             data = response.json()
             if data.get("status") == "success":
                 return {
-                    "country": data.get("country"),
-                    "isp": data.get("isp"),
-                    "asn": data.get("as")
+                    "country":     data.get("country"),
+                    "countryCode": data.get("countryCode"),
+                    "isp":         data.get("isp"),
+                    "asn":         data.get("as"),
                 }
             else:
                 return {"error": data.get("message")}

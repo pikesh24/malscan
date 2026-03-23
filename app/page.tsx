@@ -52,6 +52,9 @@ export default function LandingPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [urlInput, setUrlInput] = useState("")
+  const [isSubmittingUrl, setIsSubmittingUrl] = useState(false)
+  const [urlError, setUrlError] = useState<string | null>(null)
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -75,10 +78,30 @@ export default function LandingPage() {
       router.push(`/analysis/${data.job_id}`)
     } catch (err) {
       console.error(err)
-      // Fallback Demo Mode if backend is disconnected
       router.push(`/analysis/job-demo-8x9921`)
     }
     setIsUploading(false)
+  }
+
+  const handleUrlSubmit = async () => {
+    const trimmed = urlInput.trim()
+    if (!trimmed) { setUrlError("Please enter a URL."); return }
+    setUrlError(null)
+    setIsSubmittingUrl(true)
+    try {
+      const res = await fetch("/api/submit-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmed }),
+      })
+      if (!res.ok) throw new Error("Backend error")
+      const data = await res.json()
+      router.push(`/analysis/${data.job_id}`)
+    } catch (err) {
+      console.error(err)
+      setUrlError("Submission failed. Is the backend running?")
+    }
+    setIsSubmittingUrl(false)
   }
 
   return (
@@ -123,10 +146,40 @@ export default function LandingPage() {
           <div className="flex flex-col items-center justify-center h-full relative z-10">
              <UploadCloud className="w-8 h-8 text-[#121212] mb-4 group-hover:text-[#FF3B00] transition-colors" />
              <p className="font-bold text-lg tracking-tight text-[#121212]">DROP ARTIFACT FOR INGESTION</p>
-             <p className="font-mono text-[10px] text-gray-400 mt-2">SUPPORTED: .EXE .DLL .APK .ELF OR URL</p>
+             <p className="font-mono text-[10px] text-gray-400 mt-2">SUPPORTED: .EXE .DLL .APK .ELF .TXT AND MORE</p>
           </div>
           <div className="absolute top-0 h-full w-1 bg-[#FF3B00] opacity-50 group-hover:animate-scan"></div>
         </motion.div>
+
+        {/* OR DIVIDER */}
+        <div className="flex items-center w-full max-w-xl gap-4 my-2">
+          <div className="flex-1 h-px bg-gray-300" />
+          <span className="font-mono text-[10px] text-gray-400 tracking-widest">OR SUBMIT URL</span>
+          <div className="flex-1 h-px bg-gray-300" />
+        </div>
+
+        {/* URL INPUT */}
+        <div className="w-full max-w-xl">
+          <div className="flex gap-0 border-2 border-[#121212] bg-white shadow-[0_10px_30px_rgba(0,0,0,0.08)] overflow-hidden">
+            <input
+              type="text"
+              value={urlInput}
+              onChange={e => { setUrlInput(e.target.value); setUrlError(null) }}
+              onKeyDown={e => e.key === 'Enter' && handleUrlSubmit()}
+              placeholder="https://suspicious-domain.com/payload"
+              className="flex-1 px-4 py-3 font-mono text-xs text-[#121212] placeholder-gray-300 bg-transparent outline-none"
+            />
+            <button
+              onClick={handleUrlSubmit}
+              disabled={isSubmittingUrl}
+              className="px-5 py-3 bg-[#121212] text-white font-mono text-[10px] tracking-widest uppercase hover:bg-[#FF3B00] transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              <ArrowRight size={12} />
+              {isSubmittingUrl ? "SCANNING..." : "SCAN URL"}
+            </button>
+          </div>
+          {urlError && <p className="font-mono text-[10px] text-[#FF3B00] mt-2 tracking-wider">{urlError}</p>}
+        </div>
       </main>
 
       {/* FEATURE GRID */}

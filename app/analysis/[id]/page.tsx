@@ -30,6 +30,7 @@ export default function AnalysisPage({ params }: { params: Promise<{ id: string 
   const resolvedParams = use(params)
   
   const [progress, setProgress] = useState(0)
+  const [realStatus, setRealStatus] = useState("SUBMITTED")
   const steps = [
     "ALLOCATING_ISOLATED_SANDBOX", "MOUNTING_ARTIFACT_VOLUME", "CALCULATING_HASHES (SHA256/MD5)",
     "PE_HEADER_PARSING", "STRING_EXTRACTION & OBFUSCATION_CHECK", "YARA_RULE_MATCHING (v2024.01)",
@@ -62,10 +63,13 @@ export default function AnalysisPage({ params }: { params: Promise<{ id: string 
             if (res.ok) {
                 const data = await res.json()
                 if (data.status === 'Completed' || data.status === 'Failed') {
+                    setRealStatus(data.status === 'Failed' ? 'FAILED' : 'FINALIZING')
                     targetProgress = 100;
                 } else if (data.status === 'Processing') {
+                    setRealStatus('PROCESSING')
                     targetProgress = 60;
                 } else if (data.status === 'Submitted') {
+                    setRealStatus('QUEUED')
                     targetProgress = 20;
                 }
             }
@@ -104,7 +108,7 @@ export default function AnalysisPage({ params }: { params: Promise<{ id: string 
                   <h2 className="text-xs font-bold tracking-widest text-[#666]">JOB ID</h2>
                   <p className="text-2xl text-[#FF3B00]">{resolvedParams.id.toUpperCase()}</p>
                 </div>
-                <div className="text-right"><h2 className="text-xs font-bold tracking-widest text-[#666]">STATUS</h2><p className="text-lg animate-pulse">ANALYSIS_IN_PROGRESS</p></div>
+                <div className="text-right"><h2 className="text-xs font-bold tracking-widest text-[#666]">STATUS</h2><p className="text-lg animate-pulse">{realStatus}</p></div>
             </div>
             <div className="w-full h-2 bg-[#222] mb-12 relative overflow-hidden border border-[#333]">
                 <motion.div className="absolute top-0 left-0 h-full bg-[#FF3B00]" style={{ width: `${progress}%` }} transition={{ ease: "linear" }} />

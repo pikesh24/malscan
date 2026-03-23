@@ -1,32 +1,9 @@
-"""
-attribution_module/reporter.py
-Team Member 4 — Attribution & Security Engineer
-
-generate_report(job_id, score_data, raw_data) is called by main.py
-once a job reaches "Completed" status.
-
-Also exposes get_report_path(job_id) so the /report/{job_id} API
-endpoint can serve the saved HTML file.
-"""
-
-import os
-import json
-from jinja2 import Template
-import logging
-
-logger = logging.getLogger(__name__)
-
-REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
-
-# ── HTML template ─────────────────────────────────────────────────────────────
-# Styled to match the frontend's dark/orange MalScan Pro aesthetic.
-
-REPORT_TEMPLATE = """<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>MalScan Pro — Report {{ job_id }}</title>
+<title>MalScan Pro — Report bf44e299-a42b-404d-8ccf-7aca321890ae</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -65,8 +42,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   .score-bar-wrap { margin: 1rem 0; }
   .score-bar-track { background: #222; height: 6px; border-radius: 3px; overflow: hidden; }
   .score-bar-fill  { height: 100%; border-radius: 3px;
-                     background: {% if score_data.score >= 70 %}var(--red){% elif score_data.score >= 35 %}var(--amber){% else %}var(--green){% endif %}; 
-                     width: {{ score_data.score }}%; }
+                     background: var(--green); 
+                     width: 0%; }
   .score-label { display: flex; justify-content: space-between; font-family: var(--mono);
                  font-size: 11px; color: var(--muted); margin-bottom: 4px; }
   .reasons-list { list-style: none; }
@@ -105,8 +82,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <span class="logo-text">MalScan Pro // Forensic Report</span>
   </div>
   <div class="job-meta">
-    <div>JOB ID: {{ job_id }}</div>
-    <div>GENERATED: {{ generated_at }}</div>
+    <div>JOB ID: bf44e299-a42b-404d-8ccf-7aca321890ae</div>
+    <div>GENERATED: 2026-03-23 05:02:52 UTC</div>
   </div>
 </header>
 
@@ -115,106 +92,69 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   <!-- VERDICT CARD -->
   <div class="card">
     <div class="card-title">Analysis Verdict</div>
-    <span class="verdict-badge badge-{{ score_data.verdict }}">{{ score_data.verdict }}</span>
+    <span class="verdict-badge badge-Clear">Clear</span>
     <div class="score-bar-wrap" style="margin-top:1.25rem;">
-      <div class="score-label"><span>Threat Score</span><span>{{ score_data.score }} / 100</span></div>
+      <div class="score-label"><span>Threat Score</span><span>0 / 100</span></div>
       <div class="score-bar-track"><div class="score-bar-fill"></div></div>
     </div>
     <ul class="reasons-list" style="margin-top:1rem;">
-      {% for reason in score_data.reasons %}
-      <li><span class="bullet">&rsaquo;</span> {{ reason }}</li>
-      {% else %}
+      
       <li><span class="bullet">&rsaquo;</span> No suspicious indicators found.</li>
-      {% endfor %}
+      
     </ul>
   </div>
 
   <!-- OSINT SUMMARY CARD -->
   <div class="card">
     <div class="card-title">OSINT Attribution Summary</div>
-    {% set osint = score_data.osint_summary %}
-    {% if osint %}
+    
+    
     <table class="kv-table">
-      <tr><td>Registrar</td><td>{{ osint.registrar or "N/A" }}</td></tr>
-      <tr><td>Domain Age</td><td>{% if osint.domain_age_days is not none %}{{ osint.domain_age_days }} days{% else %}Unknown{% endif %}</td></tr>
-      <tr><td>ASN</td><td>{{ osint.asn or "N/A" }}</td></tr>
-      <tr><td>Hosting</td><td>{{ osint.hosting or "N/A" }}</td></tr>
-      <tr><td>Country</td><td>{{ osint.country or "N/A" }} {% if osint.country_code %}({{ osint.country_code }}){% endif %}</td></tr>
-      <tr><td>DNS A Records</td><td>{{ (osint.dns_a_records or []) | join(", ") or "None resolved" }}</td></tr>
+      <tr><td>Registrar</td><td>N/A</td></tr>
+      <tr><td>Domain Age</td><td>Unknown</td></tr>
+      <tr><td>ASN</td><td>N/A</td></tr>
+      <tr><td>Hosting</td><td>N/A</td></tr>
+      <tr><td>Country</td><td>N/A </td></tr>
+      <tr><td>DNS A Records</td><td>None resolved</td></tr>
     </table>
-    {% else %}
-    <p class="no-data">No OSINT data available for this job.</p>
-    {% endif %}
+    
   </div>
 
   <!-- IOC TABLE -->
   <div class="card">
     <div class="card-title">Extracted Indicators (IoCs)</div>
-    {% set indicators = score_data.indicators %}
-    {% if indicators %}
+    
+    
     <ul class="ioc-list">
-      {% for ip in (indicators.ips or []) %}
-      <li><span class="ioc-type">IPv4</span><span class="ioc-val">{{ ip }}</span></li>
-      {% endfor %}
-      {% for domain in (indicators.domains or []) %}
-      <li><span class="ioc-type">DOMAIN</span><span class="ioc-val">{{ domain }}</span></li>
-      {% endfor %}
-      {% for url in (indicators.urls or []) %}
-      <li><span class="ioc-type">URL</span><span class="ioc-val">{{ url }}</span></li>
-      {% endfor %}
-      {% if not indicators.ips and not indicators.domains and not indicators.urls %}
-      <li><span class="ioc-val no-data">No IoCs extracted.</span></li>
-      {% endif %}
+      
+      
+      
+      <li><span class="ioc-type">URL</span><span class="ioc-val">https://www.google.com</span></li>
+      
+      
     </ul>
-    {% else %}
-    <p class="no-data">No indicators data.</p>
-    {% endif %}
+    
   </div>
 
   <!-- ARTIFACT METADATA -->
   <div class="card">
     <div class="card-title">Artifact Metadata</div>
     <table class="kv-table">
-      <tr><td>SHA-256</td><td style="font-size:10px;">{{ raw_data.file_hash or "N/A" }}</td></tr>
-      <tr><td>Filename</td><td>{{ raw_data.original_filename or "N/A" }}</td></tr>
-      <tr><td>Is PE</td><td>{{ raw_data.get("is_pe", "Unknown") }}</td></tr>
-      <tr><td>Imphash</td><td style="font-size:10px;">{{ raw_data.get("imphash") or "N/A" }}</td></tr>
-      {% if raw_data.get("suspicious_sections") %}
-      <tr><td>PE Sections</td><td>
-        {% for s in raw_data.suspicious_sections %}
-          <div>{{ s.name }}: {{ s.reason }}</div>
-        {% endfor %}
-      </td></tr>
-      {% endif %}
+      <tr><td>SHA-256</td><td style="font-size:10px;">ac6bb669e40e44a8d9f8f0c94dfc63734049dcf6219aac77f02edf94b9162c09</td></tr>
+      <tr><td>Filename</td><td>link.txt</td></tr>
+      <tr><td>Is PE</td><td>False</td></tr>
+      <tr><td>Imphash</td><td style="font-size:10px;">N/A</td></tr>
+      
     </table>
   </div>
 
   <!-- INFRASTRUCTURE CLUSTERS -->
   <div class="card full-width">
     <div class="card-title">Infrastructure Clusters</div>
-    {% set clusters = score_data.clusters %}
-    {% if clusters and clusters.cluster_count %}
-      {% for signal in clusters.risk_signals %}
-      <div class="cluster-item">
-        <strong>&rsaquo; Infrastructure Link Detected</strong>
-        <p>{{ signal }}</p>
-      </div>
-      {% endfor %}
-      {% for ip, jobs in (clusters.shared_ips or {}).items() %}
-      <div class="cluster-item">
-        <strong>Shared IP: {{ ip }}</strong>
-        <p>Seen in jobs: {{ jobs | join(", ") }}</p>
-      </div>
-      {% endfor %}
-      {% for asn, jobs in (clusters.shared_asns or {}).items() %}
-      <div class="cluster-item">
-        <strong>Shared ASN: {{ asn }}</strong>
-        <p>Seen in jobs: {{ jobs | join(", ") }}</p>
-      </div>
-      {% endfor %}
-    {% else %}
+    
+    
       <p class="no-data">No cross-job infrastructure clusters detected for this submission.</p>
-    {% endif %}
+    
   </div>
 
 </div>
@@ -225,44 +165,4 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 </footer>
 
 </body>
-</html>"""
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def get_report_path(job_id: str) -> str:
-    """Returns the expected filesystem path for a job's HTML report."""
-    return os.path.join(REPORTS_DIR, f"report_{job_id}.html")
-
-
-def generate_report(job_id: str, score_data: dict, raw_data: dict) -> str:
-    """
-    Renders and saves an HTML forensic report for the given job.
-    Called by backend/app/main.py when a job completes.
-
-    Args:
-        job_id:     The unique job identifier.
-        score_data: The full dict returned by calculate_score().
-        raw_data:   Any extra artifact metadata (file_hash, original_filename, etc.)
-
-    Returns:
-        The absolute path to the saved HTML report file.
-    """
-    from datetime import datetime
-
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-
-    template = Template(REPORT_TEMPLATE)
-    html = template.render(
-        job_id=job_id,
-        score_data=score_data,
-        raw_data=raw_data,
-        generated_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-    )
-
-    report_path = get_report_path(job_id)
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    logger.info(f"Report saved: {report_path}")
-    return report_path
+</html>

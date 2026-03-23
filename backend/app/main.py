@@ -1,9 +1,24 @@
+"""
+backend/app/main.py
+Team Member 2 — Backend & Integration Engineer (wiring updated by TM4)
+
+Changes made by Team Member 4:
+  - Pass iocs into analysis_data so scoring.py can use them
+  - Call cluster_iocs() after scoring and merge result into score_data
+  - Call generate_report() after job completes
+  - Add GET /report/{job_id} endpoint to serve the HTML report
+  - Add GET /report/{job_id}/json endpoint for frontend graph data
+  - Remove hardcoded dummy fallback data
+  - Store original_filename in job for the report
+"""
+
 import hashlib, os, uuid, sys, time
-from fastapi import BackgroundTasks, FastAPI, UploadFile, File
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException, Body
+from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
 from .database import SessionLocal, init_db
 from .models import ScanJob
 
-# Add parent directory to path to import analysis_engine and attribution_module
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
@@ -13,62 +28,92 @@ try:
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
     from attribution_module.scoring import calculate_score
+    from attribution_module.clustering import cluster_iocs
+    from attribution_module.reporter import generate_report, get_report_path
 except ImportError as e:
-    print(f"Warning: Module import failed. Engine will not process correctly: {e}")
+    print(f"Warning: Module import failed: {e}")
 
 app = FastAPI()
 VAULT_DIR = "app/vault"
 os.makedirs(VAULT_DIR, exist_ok=True)
 init_db()
 
-def process_scan_job(job_id: str, file_path: str):
+
+def process_scan_job(job_id: str, file_path: str, original_filename: str = "unknown"):
     db = SessionLocal()
     job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
     if not job:
         db.close()
         return
-        
+
     try:
         job.status = "Processing"
         db.commit()
-        
-        # 1. Run Analysis Pipeline
-        iocs = extract_iocs(file_path)
+
+        # ── 1. Static Analysis ───────────────────────────────────────────────
+        iocs    = extract_iocs(file_path)
         pe_info = analyze_pe(file_path)
-        
-        # Simulate partial OSINT behavior based on IoCs to avoid relying on external free APIs timing out
+
+        # ── 2. OSINT Enrichment ──────────────────────────────────────────────
         osint_data = {}
-        if iocs.get("domains"):
-             osint_data["whois"] = {"creation_date": "2024-01-01 12:00:00"}
-        if iocs.get("ips"):
-             osint_data["geoip"] = {"countryCode": "RU"}
-             
+
+        # WHOIS — use first extracted domain if available
+        domains = iocs.get("domains", [])
+        if domains:
+            osint_data["whois"] = get_whois(domains[0])
+            osint_data["dns"]   = get_dns_records(domains[0])
+
+        # GeoIP — use first extracted IP if available
+        ips = iocs.get("ips", [])
+        if ips:
+            osint_data["geoip"] = get_geoip(ips[0])
+
+        # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
-            "static": {"suspicious_sections": pe_info.get("suspicious_sections", [])},
+            "file_hash": job.file_hash,   # <-- enables known-hash detection
+            "static": {
+                "suspicious_sections": pe_info.get("suspicious_sections", []),
+                "is_pe":    pe_info.get("is_pe", False),
+                "imphash":  pe_info.get("imphash"),
+            },
             "osint": osint_data,
-            "url": {}
+            "url":   analyze_url(iocs["urls"][0]) if iocs.get("urls") else {},
+            "iocs":  iocs,
         }
-        
-        # 2. Run Attribution Pipeline
+
+        # ── 4. Attribution Scoring ───────────────────────────────────────────
         score_data = calculate_score(analysis_data)
-        
-        # Force some dummy reasons if empty for demonstration
-        if not score_data.get("reasons"):
-            score_data["score"] = 92
-            score_data["verdict"] = "Malicious"
-            score_data["reasons"] = [
-                 "Suspicious network beaconing detected (185.192.69.14)", 
-                 "Registry persistence mechanism established (HKCU/.../Run)",
-                 "High entropy code section mapped (.vmp0)"
-            ]
-            
-        # Simulate processing time for UI realism
+
+        # ── 5. Infrastructure Clustering (cross-job) ─────────────────────────
+        all_completed_jobs = (
+            db.query(ScanJob)
+              .filter(ScanJob.status == "Completed")
+              .all()
+        )
+        cluster_result = cluster_iocs(job_id, score_data, all_completed_jobs)
+        score_data["clusters"] = cluster_result
+
+        # ── 6. Report Generation ─────────────────────────────────────────────
+        raw_meta = {
+            "file_hash":         job.file_hash,
+            "original_filename": original_filename,
+            "is_pe":             pe_info.get("is_pe", False),
+            "imphash":           pe_info.get("imphash"),
+            "suspicious_sections": pe_info.get("suspicious_sections", []),
+        }
+        generate_report(job_id, score_data, raw_meta)
+
+        # ── 7. Simulate processing delay for UI realism ──────────────────────
         time.sleep(3)
-        
+
+        # Merge file metadata into results so frontend can display them
+        score_data["file_hash"] = job.file_hash
+        score_data["imphash"]   = pe_info.get("imphash")
+
         job.results = score_data
-        job.status = "Completed"
+        job.status  = "Completed"
         db.commit()
-        
+
     except Exception as e:
         print(f"Job {job_id} failed: {e}")
         job.status = "Failed"
@@ -76,31 +121,114 @@ def process_scan_job(job_id: str, file_path: str):
     finally:
         db.close()
 
+
+# ── Upload ────────────────────────────────────────────────────────────────────
+
 @app.post("/upload")
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    # 1. Read file and calculate SHA-256 Hash [cite: 46]
     content = await file.read()
     file_hash = hashlib.sha256(content).hexdigest()
-    
-    # 2. Save to Vault using Hash (No extension for security) [cite: 101]
+
     file_path = os.path.join(VAULT_DIR, file_hash)
     with open(file_path, "wb") as f:
         f.write(content)
-        
-    # 3. Create Job ID to track analysis 
+
     job_id = str(uuid.uuid4())
     db = SessionLocal()
     new_job = ScanJob(job_id=job_id, file_hash=file_hash, status="Submitted")
     db.add(new_job)
     db.commit()
-    
-    # Trigger Background Processing Pipeline
-    background_tasks.add_task(process_scan_job, job_id, file_path)
-    
+    db.close()
+
+    background_tasks.add_task(process_scan_job, job_id, file_path, file.filename or "unknown")
+
     return {"job_id": job_id, "status": "Submitted"}
+
+
+# ── URL Submit ────────────────────────────────────────────────────────────────
+
+class UrlSubmission(BaseModel):
+    url: str
+
+@app.post("/submit-url")
+async def submit_url(background_tasks: BackgroundTasks, body: UrlSubmission):
+    """Accepts a raw URL string, saves it as a vault artifact, and runs the full analysis pipeline."""
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL cannot be empty")
+
+    content = url.encode("utf-8")
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    file_path = os.path.join(VAULT_DIR, file_hash)
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    job_id = str(uuid.uuid4())
+    db = SessionLocal()
+    new_job = ScanJob(job_id=job_id, file_hash=file_hash, status="Submitted")
+    db.add(new_job)
+    db.commit()
+    db.close()
+
+    background_tasks.add_task(process_scan_job, job_id, file_path, url)
+
+    return {"job_id": job_id, "status": "Submitted"}
+
+
+# ── Status ────────────────────────────────────────────────────────────────────
 
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     db = SessionLocal()
     job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     return {"job_id": job.job_id, "status": job.status, "results": job.results}
+
+
+# ── HTML Report ───────────────────────────────────────────────────────────────
+
+@app.get("/report/{job_id}", response_class=HTMLResponse)
+async def get_report_html(job_id: str):
+    """Serves the full HTML forensic report for a completed job."""
+    db = SessionLocal()
+    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    db.close()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "Completed":
+        raise HTTPException(status_code=202, detail=f"Job is not yet complete (status: {job.status})")
+
+    report_path = get_report_path(job_id)
+    if not os.path.exists(report_path):
+        # Regenerate on-demand if the file was lost (e.g. container restart)
+        raw_meta = {"file_hash": job.file_hash, "original_filename": "unknown"}
+        generate_report(job_id, job.results, raw_meta)
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    return HTMLResponse(content=html)
+
+
+# ── JSON Report (for frontend graph) ─────────────────────────────────────────
+
+@app.get("/report/{job_id}/json")
+async def get_report_json(job_id: str):
+    """
+    Returns the full structured results JSON for a completed job.
+    Includes graph_nodes, graph_edges, clusters — used by the frontend
+    to render the live infrastructure graph widget.
+    """
+    db = SessionLocal()
+    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    db.close()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "Completed":
+        raise HTTPException(status_code=202, detail=f"Job not yet complete (status: {job.status})")
+
+    return job.results
