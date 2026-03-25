@@ -211,6 +211,40 @@ def _check_url_flags(url_data):
     return min(score, 60), reasons
 
 
+def _check_virustotal(osint):
+    """Score boost based on VirusTotal vendor consensus."""
+    score, reasons = 0, []
+    vt = osint.get("virustotal")
+    if vt and "stats" in vt:
+        stats = vt["stats"]
+        mal = stats.get("malicious", 0)
+        sus = stats.get("suspicious", 0)
+        if mal >= 3:
+            score = 100
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal (CRITICAL).")
+        elif mal >= 1:
+            score = 30
+            reasons.append(f"Flagged as malicious by {mal} security vendor(s) on VirusTotal.")
+        if sus >= 2 and mal == 0:
+            score += 15
+            reasons.append(f"Flagged as suspicious by {sus} vendors on VirusTotal.")
+    return score, reasons
+
+
+def _check_urlscan(osint):
+    """Score boost based on URLScan.io verdict."""
+    score, reasons = 0, []
+    us = osint.get("urlscan")
+    if us:
+        if us.get("is_malicious"):
+            score = 40
+            reasons.append("URLScan.io sandbox analysis flagged this URL as malicious.")
+        elif us.get("verdict_score", 0) > 0:
+            score = 15
+            reasons.append(f"URLScan.io assigned a risk score of {us['verdict_score']}.")
+    return score, reasons
+
+
 def _check_ioc_volume(iocs):
     score, reasons = 0, []
     ip_count = len(iocs.get("ips") or [])
@@ -271,6 +305,8 @@ def calculate_score(analysis_data: dict) -> dict:
         s, r      = _check_geoip(geoip);           total += s; all_reasons += r
         s, r      = _check_url_flags(url_data);    total += s; all_reasons += r
         s, r      = _check_ioc_volume(iocs);       total += s; all_reasons += r
+        s, r      = _check_virustotal(osint);      total += s; all_reasons += r
+        s, r      = _check_urlscan(osint);         total += s; all_reasons += r
 
     final_score = min(total, 100)
     verdict = "Malicious" if final_score >= 70 else "Suspicious" if final_score >= 35 else "Clear"
@@ -296,6 +332,8 @@ def calculate_score(analysis_data: dict) -> dict:
             "country_code":    (geoip.get("countryCode") or geoip.get("country_code")),
             "hosting":         geoip.get("isp"),
             "dns_a_records":   dns.get("A", []),
+            "virustotal":      osint.get("virustotal", {}).get("stats") if "virustotal" in osint else None,
+            "urlscan":         osint.get("urlscan") if "urlscan" in osint else None,
         },
         "graph_nodes": graph_nodes,
         "graph_edges": graph_edges,

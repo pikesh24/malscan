@@ -13,11 +13,15 @@ Changes made by Team Member 4:
 """
 
 import hashlib, os, uuid, sys, time
+from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException, Body
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from .database import SessionLocal, init_db
 from .models import ScanJob
+
+# Load .env from backend directory
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
 if parent_dir not in sys.path:
@@ -27,6 +31,8 @@ try:
     from analysis_engine.static_analyzer import extract_iocs, analyze_pe
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
+    from analysis_engine.vt_client import get_url_report
+    from analysis_engine.urlscan_client import scan_url as urlscan_scan
     from attribution_module.scoring import calculate_score
     from attribution_module.clustering import cluster_iocs
     from attribution_module.reporter import generate_report, get_report_path
@@ -39,7 +45,7 @@ os.makedirs(VAULT_DIR, exist_ok=True)
 init_db()
 
 
-def process_scan_job(job_id: str, file_path: str, original_filename: str = "unknown"):
+def process_scan_job(job_id: str, file_path: str, original_filename: str = "unknown", submitted_url: str = None):
     db = SessionLocal()
     job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
     if not job:
@@ -67,6 +73,22 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         ips = iocs.get("ips", [])
         if ips:
             osint_data["geoip"] = get_geoip(ips[0])
+
+        # ── VirusTotal + URLScan.io Integration ─────────────────────────────
+        # Determine the primary URL to scan (submitted URL or first extracted)
+        scan_target_url = submitted_url or (iocs.get("urls", [None])[0] if iocs.get("urls") else None)
+
+        if scan_target_url:
+            vt_key = os.environ.get("VT_API_KEY")
+            if vt_key:
+                vt_result = get_url_report(scan_target_url, vt_key)
+                if "error" not in vt_result:
+                    osint_data["virustotal"] = vt_result
+
+            us_key = os.environ.get("URLSCAN_API_KEY")
+            if us_key:
+                us_result = urlscan_scan(scan_target_url, us_key)
+                osint_data["urlscan"] = us_result  # Pass to frontend even on error
 
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
@@ -171,7 +193,7 @@ async def submit_url(background_tasks: BackgroundTasks, body: UrlSubmission):
     db.commit()
     db.close()
 
-    background_tasks.add_task(process_scan_job, job_id, file_path, url)
+    background_tasks.add_task(process_scan_job, job_id, file_path, url, submitted_url=url)
 
     return {"job_id": job_id, "status": "Submitted"}
 
