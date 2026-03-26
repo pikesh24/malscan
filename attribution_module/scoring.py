@@ -212,20 +212,33 @@ def _check_url_flags(url_data):
 
 
 def _check_virustotal(osint):
-    """Score boost based on VirusTotal vendor consensus."""
+    """Score boost based on VirusTotal vendor consensus.
+    
+    Thresholds are calibrated to avoid false positives:
+    - 1 vendor flagging is extremely common for benign sites (FP noise)
+    - 2+ vendors is a meaningful signal worth scoring
+    - 5+ vendors is a strong consensus for malicious content
+    """
     score, reasons = 0, []
     vt = osint.get("virustotal")
     if vt and "stats" in vt:
         stats = vt["stats"]
         mal = stats.get("malicious", 0)
         sus = stats.get("suspicious", 0)
-        if mal >= 3:
+        total_scanned = mal + sus + stats.get("harmless", 0) + stats.get("undetected", 0)
+        
+        if mal >= 5:
             score = 100
             reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal (CRITICAL).")
-        elif mal >= 1:
-            score = 30
-            reasons.append(f"Flagged as malicious by {mal} security vendor(s) on VirusTotal.")
-        if sus >= 2 and mal == 0:
+        elif mal >= 3:
+            score = 50
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal.")
+        elif mal >= 2:
+            score = 25
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal.")
+        # 1 vendor = likely false positive, no score added
+        
+        if sus >= 3 and mal == 0:
             score += 15
             reasons.append(f"Flagged as suspicious by {sus} vendors on VirusTotal.")
     return score, reasons

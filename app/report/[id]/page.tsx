@@ -1,158 +1,145 @@
 "use client"
 
-import { use, useState, useEffect } from "react"
+import { use, useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { motion } from "framer-motion"
-import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare, Camera, ExternalLink } from "lucide-react"
+import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Network } from "lucide-react"
 
-// --- IMPROVED GRAPH WIDGET (The Fix) ---
-// --- ULTRA-PREMIUM GRAPH WIDGET ---
-const GraphWidget = ({ threatScore }: { threatScore: number }) => {
+// ── Node type config for the dynamic graph ──────────────────────────────────
+const NODE_STYLES: Record<string, { icon: string; color: string; border: string; shape: string }> = {
+    artifact:   { icon: "◼", color: "#FF3B00", border: "#FF3B00", shape: "square" },
+    ip:         { icon: "⊕", color: "#ef4444", border: "#ef4444", shape: "circle" },
+    domain:     { icon: "◎", color: "#3b82f6", border: "#3b82f6", shape: "circle" },
+    asn:        { icon: "#", color: "#a855f7", border: "#a855f7", shape: "diamond" },
+    country:    { icon: "⚑", color: "#22c55e", border: "#22c55e", shape: "diamond" },
+    registrar:  { icon: "R", color: "#f59e0b", border: "#f59e0b", shape: "circle" },
+}
+
+// ── Dynamic Infrastructure Graph ────────────────────────────────────────────
+const GraphWidget = ({ nodes, edges, threatScore }: { nodes: any[]; edges: any[]; threatScore: number }) => {
+    // Layout nodes in a radial pattern around center
+    const positions = useRef<Record<string, { x: number; y: number }>>({})
+
+    if (nodes.length > 0 && Object.keys(positions.current).length !== nodes.length) {
+        const center = { x: 50, y: 50 }
+        const pos: Record<string, { x: number; y: number }> = {}
+
+        // Center node = artifact
+        const artifactNode = nodes.find(n => n.type === "artifact")
+        if (artifactNode) pos[artifactNode.id] = center
+
+        // Arrange others in a ring
+        const others = nodes.filter(n => n.type !== "artifact")
+        others.forEach((node, i) => {
+            const angle = (2 * Math.PI * i) / Math.max(others.length, 1) - Math.PI / 2
+            const radius = 30 + (i % 2) * 8 // alternating radius for visual spacing
+            pos[node.id] = {
+                x: Math.max(12, Math.min(88, center.x + radius * Math.cos(angle))),
+                y: Math.max(12, Math.min(88, center.y + radius * Math.sin(angle))),
+            }
+        })
+        positions.current = pos
+    }
+
+    const getNodeStyle = (type: string) => NODE_STYLES[type] || NODE_STYLES.domain
+
     return (
-        <div className="w-full h-[600px] bg-[#050505] border-y border-[#333] relative overflow-hidden group select-none">
-
-            {/* 1. LAYER: TECHNICAL GRID & RADAR */}
-            <div className="absolute inset-0 opacity-20 pointer-events-none"
+        <div className="w-full h-[500px] bg-[#050505] border-y border-[#333] relative overflow-hidden select-none">
+            {/* Grid */}
+            <div className="absolute inset-0 opacity-15 pointer-events-none"
                 style={{ backgroundImage: 'linear-gradient(#222 1px, transparent 1px), linear-gradient(90deg, #222 1px, transparent 1px)', backgroundSize: '40px 40px' }}
             />
-            {/* Rotating Radar Sweep */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,59,0,0.1)_360deg)] animate-[spin_4s_linear_infinite] rounded-full pointer-events-none" />
-
-            {/* 2. LAYER: SVG CONNECTIONS (DATA PIPES) */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none">
-                <defs>
-                    <linearGradient id="line-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#333" />
-                        <stop offset="50%" stopColor="#666" />
-                        <stop offset="100%" stopColor="#333" />
-                    </linearGradient>
-                    <marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="2.5" orient="auto" markerUnits="strokeWidth">
-                        <path d="M0,0 L5,2.5 L0,5" fill="#555" />
-                    </marker>
-                </defs>
-
-                {/* Path to Node 1 (Top Left) */}
-                <motion.path
-                    d="M50% 50% L50% 30% L30% 30%"
-                    fill="none" stroke="#333" strokeWidth="1"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.5 }}
-                />
-                {/* Data Packet Animation 1 */}
-                <circle r="2" fill="#FFF">
-                    <animateMotion repeatCount="indefinite" dur="3s" keyPoints="0;1" keyTimes="0;1">
-                        <mpath href="#path1" />
-                    </animateMotion>
-                </circle>
-                <path id="path1" d="M 700 300 L 700 180 L 420 180" fill="none" /> {/* Hardcoded approximates for SVG coord layout */}
-
-                {/* Path to Node 2 (Bottom Right) */}
-                <motion.path
-                    d="M50% 50% L50% 70% L70% 70%"
-                    fill="none" stroke="#333" strokeWidth="1"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.7 }}
-                />
-
-                {/* Path to Node 3 (Top Right) */}
-                <motion.path
-                    d="M50% 50% L80% 50% L80% 30%"
-                    fill="none" stroke="#333" strokeWidth="1"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1, delay: 0.9 }}
-                />
-            </svg>
-
-            {/* 3. LAYER: INTERACTIVE NODES */}
-
-            {/* CENTER: MALWARE HOST */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 group/center">
-                <div className="relative">
-                    <div className="absolute inset-0 bg-[#FF3B00] blur-xl opacity-20 animate-pulse"></div>
-                    <div className="w-20 h-20 border border-[#FF3B00] bg-[#0A0A0A] flex items-center justify-center relative">
-                        <div className="w-1 h-1 bg-[#FF3B00] absolute top-1 left-1"></div>
-                        <div className="w-1 h-1 bg-[#FF3B00] absolute top-1 right-1"></div>
-                        <div className="w-1 h-1 bg-[#FF3B00] absolute bottom-1 left-1"></div>
-                        <div className="w-1 h-1 bg-[#FF3B00] absolute bottom-1 right-1"></div>
-                        <TerminalSquare className="text-[#FF3B00] w-8 h-8 animate-pulse" />
-                    </div>
-                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-max text-center">
-                        <div className="text-[9px] font-mono text-[#FF3B00] tracking-[0.3em] bg-[#121212] px-2 py-1 border border-[#FF3B00]/30">HOST: ARTIFACT.EXE</div>
-                    </div>
-                </div>
-            </div>
-
-            {/* NODE 1: C2 SERVER (Russia) */}
-            <motion.div
-                className="absolute top-[30%] left-[30%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
-                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1 }}
-            >
-                <div className="flex flex-col items-center cursor-pointer">
-                    <div className="w-12 h-12 bg-[#121212] border border-gray-600 group-hover/node:border-white transition-colors flex items-center justify-center rounded-full relative">
-                        <Globe className="w-5 h-5 text-gray-400 group-hover/node:text-white" />
-                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-[#121212]"></div>
-                    </div>
-                    <div className="mt-4 bg-[#121212]/90 border border-gray-700 p-3 backdrop-blur-md opacity-0 group-hover/node:opacity-100 transition-opacity absolute top-12 w-48 z-50 pointer-events-none">
-                        <div className="flex justify-between items-center mb-2 border-b border-gray-700 pb-1">
-                            <span className="text-[9px] text-gray-400 font-bold">185.192.69.14</span>
-                            <span className="text-[9px] text-red-500 font-mono">MALICIOUS</span>
-                        </div>
-                        <div className="space-y-1 font-mono text-[9px] text-gray-500">
-                            <div className="flex justify-between"><span>ASN:</span><span className="text-gray-300">AS44050</span></div>
-                            <div className="flex justify-between"><span>GEO:</span><span className="text-gray-300">Moscow, RU</span></div>
-                            <div className="flex justify-between"><span>PROTO:</span><span className="text-gray-300">TCP/443 (HTTPS)</span></div>
-                        </div>
-                    </div>
-                </div>
-            </motion.div>
-
-            {/* NODE 2: DROP ZONE (USA) */}
-            <motion.div
-                className="absolute top-[70%] left-[70%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
-                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.2 }}
-            >
-                <div className="flex flex-col items-center cursor-pointer">
-                    <div className="w-10 h-10 bg-[#121212] border border-blue-500/50 group-hover/node:border-blue-400 transition-colors flex items-center justify-center transform rotate-45">
-                        <div className="transform -rotate-45">
-                            <Cpu className="w-4 h-4 text-blue-400" />
-                        </div>
-                    </div>
-                    {/* Metadata Tooltip */}
-                    <div className="mt-4 bg-[#121212]/90 border border-gray-700 p-3 backdrop-blur-md opacity-0 group-hover/node:opacity-100 transition-opacity absolute top-10 w-40 z-50 pointer-events-none">
-                        <div className="text-[9px] text-blue-400 font-bold mb-1 border-b border-gray-700 pb-1">DROPPER URL</div>
-                        <div className="font-mono text-[9px] text-gray-400">cdn-update-sys.net</div>
-                    </div>
-                </div>
-            </motion.div>
-
-            {/* NODE 3: REGISTRY PERSISTENCE */}
-            <motion.div
-                className="absolute top-[30%] left-[80%] -translate-x-1/2 -translate-y-1/2 z-20 group/node"
-                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.4 }}
-            >
-                <div className="flex flex-col items-center cursor-pointer">
-                    <div className="w-3 h-3 bg-purple-500 rounded-sm animate-ping absolute opacity-50"></div>
-                    <div className="w-8 h-8 bg-[#121212] border border-purple-500 flex items-center justify-center">
-                        <Hash className="w-4 h-4 text-purple-500" />
-                    </div>
-                    <div className="absolute top-10 text-[9px] font-mono text-purple-500 bg-black px-1 opacity-0 group-hover/node:opacity-100 transition-opacity">REGISTRY_MOD</div>
-                </div>
-            </motion.div>
-
-            {/* 4. LAYER: HUD OVERLAY */}
-            <div className="absolute top-6 left-6 font-mono text-[10px] text-gray-500">
-                <div className="flex gap-4">
-                    <div>ZOOM: 100%</div>
-                </div>
-            </div>
+            {/* Radar */}
             {threatScore > 0 && (
-                <div className="absolute bottom-6 left-6 font-mono text-[10px] text-[#FF3B00] animate-pulse">
-                    LIVE_FEED :: CAPTURING_PACKETS
-                </div>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,59,0,0.08)_360deg)] animate-[spin_4s_linear_infinite] rounded-full pointer-events-none" />
             )}
 
-            {/* Decorative Crosshairs */}
-            <div className="absolute top-0 left-1/2 h-4 w-px bg-gray-800"></div>
-            <div className="absolute bottom-0 left-1/2 h-4 w-px bg-gray-800"></div>
-            <div className="absolute left-0 top-1/2 w-4 h-px bg-gray-800"></div>
-            <div className="absolute right-0 top-1/2 w-4 h-px bg-gray-800"></div>
+            {/* SVG Edges */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                {edges.map((edge: any, i: number) => {
+                    const from = positions.current[edge.source]
+                    const to = positions.current[edge.target]
+                    if (!from || !to) return null
+                    return (
+                        <motion.line
+                            key={i}
+                            x1={`${from.x}%`} y1={`${from.y}%`}
+                            x2={`${to.x}%`} y2={`${to.y}%`}
+                            stroke="#333" strokeWidth="1"
+                            initial={{ pathLength: 0, opacity: 0 }}
+                            animate={{ pathLength: 1, opacity: 0.6 }}
+                            transition={{ duration: 0.8, delay: 0.3 + i * 0.1 }}
+                        />
+                    )
+                })}
+            </svg>
 
+            {/* Nodes */}
+            {nodes.map((node: any, i: number) => {
+                const pos = positions.current[node.id]
+                if (!pos) return null
+                const style = getNodeStyle(node.type)
+                const isArtifact = node.type === "artifact"
+                const riskColor = node.risk === "high" ? "#FF3B00" : node.risk === "medium" ? "#f59e0b" : style.color
+
+                return (
+                    <motion.div
+                        key={node.id}
+                        className="absolute -translate-x-1/2 -translate-y-1/2 z-20 group/node"
+                        style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+                        initial={{ scale: 0, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: 0.5 + i * 0.12, type: "spring", stiffness: 200 }}
+                    >
+                        <div className="flex flex-col items-center cursor-pointer">
+                            {/* Node circle/square */}
+                            <div
+                                className={`flex items-center justify-center transition-all ${isArtifact ? 'w-16 h-16' : 'w-10 h-10'} ${style.shape === 'diamond' ? 'rotate-45' : style.shape === 'circle' ? 'rounded-full' : ''}`}
+                                style={{ border: `1.5px solid ${riskColor}`, backgroundColor: '#0A0A0A' }}
+                            >
+                                <span className={`font-mono text-xs font-bold ${style.shape === 'diamond' ? '-rotate-45' : ''}`} style={{ color: riskColor }}>
+                                    {isArtifact ? <TerminalSquare className="w-6 h-6" style={{ color: riskColor }} /> : style.icon}
+                                </span>
+                            </div>
+                            {/* Label */}
+                            {isArtifact && (
+                                <div className="absolute -bottom-7 w-max">
+                                    <div className="text-[8px] font-mono tracking-[0.2em] px-2 py-0.5 border" style={{ color: riskColor, borderColor: `${riskColor}40`, backgroundColor: '#121212' }}>
+                                        HOST: ARTIFACT
+                                    </div>
+                                </div>
+                            )}
+                            {/* Tooltip on hover */}
+                            <div className="absolute top-full mt-2 bg-[#121212]/95 border border-gray-700 p-2 backdrop-blur-md opacity-0 group-hover/node:opacity-100 transition-opacity w-40 z-50 pointer-events-none">
+                                <div className="text-[9px] font-mono font-bold mb-1 border-b border-gray-700 pb-1" style={{ color: riskColor }}>
+                                    {node.type.toUpperCase()}
+                                </div>
+                                <div className="text-[9px] font-mono text-gray-400 break-all">{node.label}</div>
+                                {node.risk === "high" && <div className="text-[8px] text-red-500 font-mono mt-1 uppercase">⚠ High Risk</div>}
+                            </div>
+                            {/* Risk pulse */}
+                            {node.risk === "high" && !isArtifact && (
+                                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-[#0A0A0A] animate-ping opacity-60" />
+                            )}
+                        </div>
+                    </motion.div>
+                )
+            })}
+
+            {/* HUD */}
+            <div className="absolute top-4 left-4 font-mono text-[9px] text-gray-600">
+                NODES: {nodes.length} | EDGES: {edges.length}
+            </div>
+            {threatScore > 0 && (
+                <div className="absolute bottom-4 left-4 font-mono text-[9px] text-[#FF3B00] animate-pulse">
+                    LIVE_FEED :: MAPPING_INFRASTRUCTURE
+                </div>
+            )}
+            {nodes.length === 0 && (
+                <div className="absolute inset-0 flex items-center justify-center font-mono text-xs text-gray-600 tracking-wider">
+                    NO INFRASTRUCTURE DATA AVAILABLE
+                </div>
+            )}
         </div>
     )
 }
@@ -160,9 +147,11 @@ const GraphWidget = ({ threatScore }: { threatScore: number }) => {
 // --- MAIN PAGE COMPONENT ---
 export default function ReportPage({ params }: { params: Promise<{ id: string }> }) {
     const resolvedParams = use(params)
+    const router = useRouter()
 
     const [reportData, setReportData] = useState<any>(null)
     const [loading, setLoading] = useState(true)
+    const [shareToast, setShareToast] = useState(false)
 
     useEffect(() => {
         const fetchReport = async () => {
@@ -173,18 +162,45 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                     if (data.status === 'Failed') {
                         setReportData({ score: 0, verdict: "Failed", reasons: ["Analysis encountered a fatal error. Please check server logs."] })
                     } else {
-                        setReportData(data.results || { score: 92, verdict: "Malicious", reasons: ["Simulated Demo Malicious File"] })
+                        setReportData(data.results || { score: 0, verdict: "Clear", reasons: ["No data available"] })
                     }
                 }
             } catch (e) {
                 console.error(e)
-                setReportData({ score: 92, verdict: "Malicious", reasons: ["Backend Offline - Demo Data"] })
+                setReportData({ score: 0, verdict: "Error", reasons: ["Backend Offline"] })
             } finally {
                 setLoading(false)
             }
         }
         fetchReport()
     }, [resolvedParams.id])
+
+    // --- PDF Export (native print → Save as PDF) ---
+    const handleExportPDF = () => {
+        document.title = `MalScan_Report_${resolvedParams.id.slice(0, 8)}`
+        window.print()
+        setTimeout(() => { document.title = 'MalScan Report' }, 1000)
+    }
+
+    // --- Share Intel ---
+    const handleShare = async () => {
+        const url = window.location.href
+        try {
+            await navigator.clipboard.writeText(url)
+            setShareToast(true)
+            setTimeout(() => setShareToast(false), 2500)
+        } catch {
+            // Fallback
+            const ta = document.createElement('textarea')
+            ta.value = url
+            document.body.appendChild(ta)
+            ta.select()
+            document.execCommand('copy')
+            document.body.removeChild(ta)
+            setShareToast(true)
+            setTimeout(() => setShareToast(false), 2500)
+        }
+    }
 
     if (loading) return <div className="min-h-screen bg-[#F5F5F3] flex items-center justify-center font-mono">LOADING_REPORT...</div>
 
@@ -197,6 +213,8 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
     const imphash = reportData?.imphash || "N/A"
     const vtStats = reportData?.osint_summary?.virustotal || null
     const urlscanData = reportData?.osint_summary?.urlscan || null
+    const graphNodes = reportData?.graph_nodes || []
+    const graphEdges = reportData?.graph_edges || []
 
     // Build IOC rows from real backend data
     const indicators = reportData?.indicators || {}
@@ -206,11 +224,23 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         ...(indicators.domains || []).map((v: string) => ({ type: "DOMAIN", val: v, tag: "EXTRACTED" })),
     ]
 
+    // VT bar total (including undetected)
+    const vtTotal = vtStats ? (vtStats.malicious + vtStats.suspicious + vtStats.harmless + (vtStats.undetected || 0)) || 1 : 1
+
     return (
         <div className="min-h-screen bg-[#F5F5F3] text-[#121212] font-sans pb-20">
+            {/* Print-optimized: hide toolbar when printing */}
+            <style>{`@media print { header { display: none !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`}</style>
             {/* TOOLBAR */}
             <header className="sticky top-0 bg-[#F5F5F3]/90 backdrop-blur-md border-b border-gray-200 px-8 py-4 z-40 flex justify-between items-center">
                 <div className="flex items-center gap-4 font-mono text-xs">
+                    <button
+                        onClick={() => router.push('/')}
+                        className="flex items-center gap-1.5 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors border border-gray-300 hover:border-[#FF3B00] px-3 py-1.5 bg-white"
+                        title="Back to Home"
+                    >
+                        <Home size={13} /> HOME
+                    </button>
                     <span className="text-gray-400 uppercase tracking-wider">JOB ID: {resolvedParams.id}</span>
                     <span className={`px-3 py-1 font-bold rounded-sm uppercase tracking-widest ${verdict === 'Clear'
                             ? 'bg-green-900 text-green-400'
@@ -219,14 +249,30 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                                 : 'bg-red-900 text-[#FF3B00]'
                         }`}>{verdict}</span>
                 </div>
-                <div className="flex gap-4">
+                <div className="flex gap-4 relative">
                     <button
-                        onClick={() => window.open(`/api/report/${resolvedParams.id}`, '_blank')}
+                        onClick={handleExportPDF}
                         className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"
                     >
                         <Download size={14} /> EXPORT PDF
                     </button>
-                    <button className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"><Share2 size={14} /> SHARE INTEL</button>
+                    <button
+                        onClick={handleShare}
+                        className="flex items-center gap-2 text-xs font-bold tracking-widest hover:text-[#FF3B00] transition-colors"
+                    >
+                        <Share2 size={14} /> SHARE INTEL
+                    </button>
+                    {/* Toast notification */}
+                    {shareToast && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute -bottom-10 right-0 bg-[#121212] text-white text-[10px] font-mono px-3 py-1.5 tracking-widest flex items-center gap-2 shadow-lg"
+                        >
+                            <Check size={10} className="text-green-400" /> LINK COPIED
+                        </motion.div>
+                    )}
                 </div>
             </header>
 
@@ -253,21 +299,25 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                     </div>
                     <div className="pt-6 border-t border-gray-100"><div className="text-xs text-gray-500 font-mono leading-relaxed">EXECUTIVE SUMMARY: {reasons.map((r: string) => <p key={r}>- {r}</p>)}</div></div>
 
-                    {/* VirusTotal Vendor Consensus */}
+                    {/* VirusTotal Vendor Consensus — FIXED BAR */}
                     {vtStats && (
                         <div className="mt-6 border-t border-gray-100 pt-6">
                             <h3 className="text-[10px] font-bold text-gray-400 mb-4 uppercase flex items-center gap-2">
                                 <ShieldAlert size={12}/> VirusTotal Vendor Consensus
                             </h3>
-                            <div className="flex gap-0.5 h-3 w-full bg-gray-100 mb-3 overflow-hidden">
-                                {vtStats.malicious > 0 && <div className="h-full bg-[#FF3B00] transition-all" style={{ width: `${(vtStats.malicious / ((vtStats.malicious + vtStats.harmless + vtStats.suspicious + (vtStats.undetected || 0)) || 1)) * 100}%` }} />}
-                                {vtStats.suspicious > 0 && <div className="h-full bg-amber-500 transition-all" style={{ width: `${(vtStats.suspicious / ((vtStats.malicious + vtStats.harmless + vtStats.suspicious + (vtStats.undetected || 0)) || 1)) * 100}%` }} />}
-                                {vtStats.harmless > 0 && <div className="h-full bg-green-500 transition-all" style={{ width: `${(vtStats.harmless / ((vtStats.malicious + vtStats.harmless + vtStats.suspicious + (vtStats.undetected || 0)) || 1)) * 100}%` }} />}
+                            <div className="flex h-3 w-full bg-gray-100 mb-3 overflow-hidden">
+                                {vtStats.malicious > 0 && <div className="h-full bg-[#FF3B00] transition-all" style={{ width: `${(vtStats.malicious / vtTotal) * 100}%` }} />}
+                                {vtStats.suspicious > 0 && <div className="h-full bg-amber-500 transition-all" style={{ width: `${(vtStats.suspicious / vtTotal) * 100}%` }} />}
+                                {vtStats.harmless > 0 && <div className="h-full bg-green-500 transition-all" style={{ width: `${(vtStats.harmless / vtTotal) * 100}%` }} />}
+                                {(vtStats.undetected || 0) > 0 && <div className="h-full bg-gray-300 transition-all" style={{ width: `${((vtStats.undetected || 0) / vtTotal) * 100}%` }} />}
                             </div>
                             <div className="flex flex-wrap gap-3 text-[10px] font-mono uppercase">
                                 <div className="flex items-center gap-1 text-[#FF3B00]"><div className="w-2 h-2 bg-[#FF3B00]" /> {vtStats.malicious} Malicious</div>
                                 <div className="flex items-center gap-1 text-amber-500"><div className="w-2 h-2 bg-amber-500" /> {vtStats.suspicious} Suspicious</div>
                                 <div className="flex items-center gap-1 text-green-500"><div className="w-2 h-2 bg-green-500" /> {vtStats.harmless} Harmless</div>
+                                {(vtStats.undetected || 0) > 0 && (
+                                    <div className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-gray-300" /> {vtStats.undetected} Undetected</div>
+                                )}
                             </div>
                         </div>
                     )}
@@ -276,52 +326,61 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                 {/* COL 2: VISUAL GRAPH & IOCs */}
                 <div className="lg:col-span-8 flex flex-col gap-8">
                     {/* URLScan.io Sandbox Result */}
-                    {urlscanData && (
+                    {urlscanData && !urlscanData.error && (
                         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.15 }} className="bg-white border border-gray-200 shadow-sm">
                             <div className="p-4 border-b border-gray-200 flex justify-between items-center">
                                 <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Camera size={14}/> URLScan.io Sandbox</h3>
                                 {urlscanData.is_malicious && <span className="text-[9px] bg-red-900 text-[#FF3B00] px-2 py-1 font-mono uppercase tracking-widest">MALICIOUS</span>}
                             </div>
                             <div className="p-4">
-                                {urlscanData.error ? (
-                                    <div className="bg-gray-50 border border-gray-200 p-8 flex flex-col items-center justify-center text-center">
-                                        <Camera className="text-gray-300 w-8 h-8 mb-4 opacity-50" />
-                                        <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Sandbox Unavailable</p>
-                                        <p className="text-[10px] font-mono text-[#FF3B00] bg-red-50 px-3 py-2 border border-red-100">{urlscanData.error}</p>
+                                {urlscanData.screenshot_url && (
+                                    <div className="mb-4 border border-gray-200 bg-gray-50 overflow-hidden">
+                                        <img src={urlscanData.screenshot_url} alt="URLScan screenshot" className="w-full h-auto" />
                                     </div>
-                                ) : (
-                                    <>
-                                        {urlscanData.screenshot_url && (
-                                            <div className="mb-4 border border-gray-200 bg-gray-50 overflow-hidden">
-                                                <img src={urlscanData.screenshot_url} alt="URLScan screenshot" className="w-full h-auto" />
-                                            </div>
-                                        )}
-                                        <div className="grid grid-cols-2 gap-3 font-mono text-[10px]">
-                                            {urlscanData.page_title && <div><span className="text-gray-400 uppercase">Title:</span> <span className="text-gray-700">{urlscanData.page_title}</span></div>}
-                                            {urlscanData.page_ip && <div><span className="text-gray-400 uppercase">IP:</span> <span className="text-gray-700">{urlscanData.page_ip}</span></div>}
-                                            {urlscanData.page_country && <div><span className="text-gray-400 uppercase">Country:</span> <span className="text-gray-700">{urlscanData.page_country}</span></div>}
-                                            {urlscanData.page_server && <div><span className="text-gray-400 uppercase">Server:</span> <span className="text-gray-700">{urlscanData.page_server}</span></div>}
+                                )}
+                                <div className="grid grid-cols-2 gap-3 font-mono text-[10px]">
+                                    {urlscanData.page_title && <div><span className="text-gray-400 uppercase">Title:</span> <span className="text-gray-700">{urlscanData.page_title}</span></div>}
+                                    {urlscanData.page_ip && <div><span className="text-gray-400 uppercase">IP:</span> <span className="text-gray-700">{urlscanData.page_ip}</span></div>}
+                                    {urlscanData.page_country && <div><span className="text-gray-400 uppercase">Country:</span> <span className="text-gray-700">{urlscanData.page_country}</span></div>}
+                                    {urlscanData.page_server && <div><span className="text-gray-400 uppercase">Server:</span> <span className="text-gray-700">{urlscanData.page_server}</span></div>}
+                                </div>
+                                {urlscanData.outgoing_domains && urlscanData.outgoing_domains.length > 0 && (
+                                    <div className="mt-4 border-t border-gray-100 pt-3">
+                                        <span className="text-[10px] font-mono text-gray-400 uppercase">Outgoing Domains ({urlscanData.outgoing_domains.length}):</span>
+                                        <div className="flex flex-wrap gap-1 mt-2">
+                                            {urlscanData.outgoing_domains.map((d: string) => (
+                                                <span key={d} className="text-[9px] bg-gray-100 px-2 py-0.5 font-mono text-gray-600">{d}</span>
+                                            ))}
                                         </div>
-                                        {urlscanData.outgoing_domains && urlscanData.outgoing_domains.length > 0 && (
-                                            <div className="mt-4 border-t border-gray-100 pt-3">
-                                                <span className="text-[10px] font-mono text-gray-400 uppercase">Outgoing Domains ({urlscanData.outgoing_domains.length}):</span>
-                                                <div className="flex flex-wrap gap-1 mt-2">
-                                                    {urlscanData.outgoing_domains.map((d: string) => (
-                                                        <span key={d} className="text-[9px] bg-gray-100 px-2 py-0.5 font-mono text-gray-600">{d}</span>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </>
+                                    </div>
                                 )}
                             </div>
                         </motion.div>
                     )}
 
-                    {/* GRAPH */}
+                    {/* URLScan info banner when sandbox is unavailable */}
+                    {urlscanData && urlscanData.error && (
+                        <motion.div initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.15 }} className="flex items-start gap-3 px-4 py-3 bg-gray-50 border border-gray-200 text-gray-500">
+                            <Info size={14} className="mt-0.5 shrink-0 text-gray-400" />
+                            <div>
+                                <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5">Sandbox Skipped</p>
+                                <p className="text-[10px] font-mono leading-relaxed">{urlscanData.error}</p>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* DYNAMIC INFRASTRUCTURE MAP */}
                     <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.1 }} className="bg-white border border-gray-200 shadow-sm">
-                        <div className="p-4 border-b border-gray-200 flex justify-between items-center"><h3 className="text-xs font-bold tracking-[0.2em] uppercase">Infrastructure Map</h3><div className="flex gap-2"><span className="w-2 h-2 bg-[#FF3B00] rounded-full animate-pulse"></span><span className="text-[10px] font-mono text-gray-400">LIVE C2 NODE</span></div></div>
-                        <GraphWidget threatScore={threatScore} />
+                        <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                            <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Network size={14} /> Infrastructure Map</h3>
+                            <div className="flex gap-4">
+                                {graphNodes.filter((n: any) => n.risk === 'high').length > 0 && (
+                                    <div className="flex gap-2 items-center"><span className="w-2 h-2 bg-[#FF3B00] rounded-full animate-pulse"></span><span className="text-[10px] font-mono text-gray-400">HIGH RISK</span></div>
+                                )}
+                                <span className="text-[10px] font-mono text-gray-400">{graphNodes.length} NODES</span>
+                            </div>
+                        </div>
+                        <GraphWidget nodes={graphNodes} edges={graphEdges} threatScore={threatScore} />
                     </motion.div>
 
                     {/* IOC TERMINAL */}

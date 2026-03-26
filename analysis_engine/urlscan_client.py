@@ -37,6 +37,17 @@ def scan_url(url: str, api_key: str) -> dict:
         if submit.status_code == 429:
             return {"error": "URLScan rate limit exceeded."}
         if submit.status_code not in (200, 201):
+            error_detail = ""
+            try:
+                error_detail = submit.json().get("message", "")
+            except Exception:
+                pass
+
+            # URLScan blocks scans of major/popular domains
+            if "prevented" in error_detail.lower() or "blocked" in error_detail.lower():
+                return {"error": "URLScan does not allow scanning this domain (major site blocked by policy)."}
+            if error_detail:
+                return {"error": f"URLScan error: {error_detail}"}
             return {"error": f"URLScan submit failed (HTTP {submit.status_code})"}
 
         result_url = submit.json().get("api")

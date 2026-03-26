@@ -203,10 +203,13 @@ async def submit_url(background_tasks: BackgroundTasks, body: UrlSubmission):
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     db = SessionLocal()
-    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {"job_id": job.job_id, "status": job.status, "results": job.results}
+    try:
+        job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"job_id": job.job_id, "status": job.status, "results": job.results}
+    finally:
+        db.close()
 
 
 # ── HTML Report ───────────────────────────────────────────────────────────────
@@ -215,8 +218,10 @@ async def get_status(job_id: str):
 async def get_report_html(job_id: str):
     """Serves the full HTML forensic report for a completed job."""
     db = SessionLocal()
-    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
-    db.close()
+    try:
+        job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    finally:
+        db.close()
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -245,8 +250,10 @@ async def get_report_json(job_id: str):
     to render the live infrastructure graph widget.
     """
     db = SessionLocal()
-    job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
-    db.close()
+    try:
+        job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
+    finally:
+        db.close()
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
