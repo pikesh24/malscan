@@ -211,6 +211,53 @@ def _check_url_flags(url_data):
     return min(score, 60), reasons
 
 
+def _check_virustotal(osint):
+    """Score boost based on VirusTotal vendor consensus.
+    
+    Thresholds are calibrated to avoid false positives:
+    - 1 vendor flagging is extremely common for benign sites (FP noise)
+    - 2+ vendors is a meaningful signal worth scoring
+    - 5+ vendors is a strong consensus for malicious content
+    """
+    score, reasons = 0, []
+    vt = osint.get("virustotal")
+    if vt and "stats" in vt:
+        stats = vt["stats"]
+        mal = stats.get("malicious", 0)
+        sus = stats.get("suspicious", 0)
+        total_scanned = mal + sus + stats.get("harmless", 0) + stats.get("undetected", 0)
+        
+        if mal >= 5:
+            score = 100
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal (CRITICAL).")
+        elif mal >= 3:
+            score = 50
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal.")
+        elif mal >= 2:
+            score = 25
+            reasons.append(f"Flagged as malicious by {mal} security vendors on VirusTotal.")
+        # 1 vendor = likely false positive, no score added
+        
+        if sus >= 3 and mal == 0:
+            score += 15
+            reasons.append(f"Flagged as suspicious by {sus} vendors on VirusTotal.")
+    return score, reasons
+
+
+def _check_urlscan(osint):
+    """Score boost based on URLScan.io verdict."""
+    score, reasons = 0, []
+    us = osint.get("urlscan")
+    if us:
+        if us.get("is_malicious"):
+            score = 40
+            reasons.append("URLScan.io sandbox analysis flagged this URL as malicious.")
+        elif us.get("verdict_score", 0) > 0:
+            score = 15
+            reasons.append(f"URLScan.io assigned a risk score of {us['verdict_score']}.")
+    return score, reasons
+
+
 def _check_ioc_volume(iocs):
     score, reasons = 0, []
     ip_count = len(iocs.get("ips") or [])
@@ -223,6 +270,33 @@ def _check_ioc_volume(iocs):
     if url_count >= 3:
         score += 8
         reasons.append(f"{url_count} embedded URLs extracted from artifact.")
+    return score, reasons
+
+
+def _check_apk_permissions(apk_data):
+    """Score boost based on dangerous Android permissions."""
+    score, reasons = 0, []
+    if not apk_data or not apk_data.get("is_apk"):
+        return score, reasons
+    dangerous = apk_data.get("dangerous_permissions", [])
+    if len(dangerous) >= 5:
+        score = 35
+        reasons.append(f"APK requests {len(dangerous)} dangerous permissions — highly suspicious.")
+    elif len(dangerous) >= 3:
+        score = 20
+        reasons.append(f"APK requests {len(dangerous)} dangerous permissions.")
+    elif len(dangerous) >= 1:
+        score = 10
+        reasons.append(f"APK requests dangerous permission(s): {', '.join(dangerous[:3])}.")
+
+    # SMS read+send combo is a classic spyware pattern
+    perm_set = set(dangerous)
+    if {"android.permission.READ_SMS", "android.permission.SEND_SMS"}.issubset(perm_set):
+        score += 15
+        reasons.append("APK requests both READ_SMS and SEND_SMS — common in SMS-stealing malware.")
+    if "android.permission.BIND_DEVICE_ADMIN" in perm_set:
+        score += 15
+        reasons.append("APK requests BIND_DEVICE_ADMIN — can lock device or prevent uninstall.")
     return score, reasons
 
 
@@ -271,6 +345,9 @@ def calculate_score(analysis_data: dict) -> dict:
         s, r      = _check_geoip(geoip);           total += s; all_reasons += r
         s, r      = _check_url_flags(url_data);    total += s; all_reasons += r
         s, r      = _check_ioc_volume(iocs);       total += s; all_reasons += r
+        s, r      = _check_virustotal(osint);      total += s; all_reasons += r
+        s, r      = _check_urlscan(osint);         total += s; all_reasons += r
+        s, r      = _check_apk_permissions(analysis_data.get("apk", {})); total += s; all_reasons += r
 
     final_score = min(total, 100)
     verdict = "Malicious" if final_score >= 70 else "Suspicious" if final_score >= 35 else "Clear"
@@ -296,6 +373,8 @@ def calculate_score(analysis_data: dict) -> dict:
             "country_code":    (geoip.get("countryCode") or geoip.get("country_code")),
             "hosting":         geoip.get("isp"),
             "dns_a_records":   dns.get("A", []),
+            "virustotal":      osint.get("virustotal", {}).get("stats") if "virustotal" in osint else None,
+            "urlscan":         osint.get("urlscan") if "urlscan" in osint else None,
         },
         "graph_nodes": graph_nodes,
         "graph_edges": graph_edges,
