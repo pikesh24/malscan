@@ -3,7 +3,7 @@
 import { use, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { motion } from "framer-motion"
-import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Network } from "lucide-react"
+import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Network, Shield, Package, Archive, Smartphone } from "lucide-react"
 
 // ── Node type config for the dynamic graph ──────────────────────────────────
 const NODE_STYLES: Record<string, { icon: string; color: string; border: string; shape: string }> = {
@@ -213,6 +213,9 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
     const imphash = reportData?.imphash || "N/A"
     const vtStats = reportData?.osint_summary?.virustotal || null
     const urlscanData = reportData?.osint_summary?.urlscan || null
+    const sandboxData = reportData?.osint_summary?.sandbox || null
+    const apkInfo = reportData?.apk_info || null
+    const archiveContents = reportData?.archive_contents || []
     const graphNodes = reportData?.graph_nodes || []
     const graphEdges = reportData?.graph_edges || []
 
@@ -365,6 +368,115 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                             <div>
                                 <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5">Sandbox Skipped</p>
                                 <p className="text-[10px] font-mono leading-relaxed">{urlscanData.error}</p>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* HYBRID ANALYSIS SANDBOX */}
+                    {sandboxData && !sandboxData.error && sandboxData.status !== "pending" && (
+                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.18 }} className="bg-white border border-gray-200 shadow-sm">
+                            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Shield size={14}/> Hybrid Analysis Sandbox</h3>
+                                <div className="flex items-center gap-3">
+                                    {sandboxData.is_malicious && <span className="text-[9px] bg-red-900 text-[#FF3B00] px-2 py-1 font-mono uppercase tracking-widest">MALICIOUS</span>}
+                                    {sandboxData.threat_score != null && <span className="text-[9px] font-mono text-gray-500">SCORE: {sandboxData.threat_score}/100</span>}
+                                </div>
+                            </div>
+                            <div className="p-4">
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-[10px] mb-4">
+                                    {sandboxData.verdict && <div><span className="text-gray-400 uppercase">Verdict:</span> <span className={`font-bold ${sandboxData.is_malicious ? 'text-[#FF3B00]' : 'text-gray-700'}`}>{sandboxData.verdict.toUpperCase()}</span></div>}
+                                    {sandboxData.total_processes != null && <div><span className="text-gray-400 uppercase">Processes:</span> <span className="text-gray-700">{sandboxData.total_processes}</span></div>}
+                                    {sandboxData.total_network_connections != null && <div><span className="text-gray-400 uppercase">Network Calls:</span> <span className="text-gray-700">{sandboxData.total_network_connections}</span></div>}
+                                    {sandboxData.classification_tags?.length > 0 && <div><span className="text-gray-400 uppercase">Tags:</span> <span className="text-gray-700">{sandboxData.classification_tags.join(", ")}</span></div>}
+                                </div>
+                                {sandboxData.mitre_attcks?.length > 0 && (
+                                    <div className="border-t border-gray-100 pt-3 mt-2">
+                                        <span className="text-[10px] font-mono text-gray-400 uppercase">MITRE ATT&CK ({sandboxData.mitre_attcks.length}):</span>
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {sandboxData.mitre_attcks.map((m: any, i: number) => (
+                                                <span key={i} className="text-[9px] bg-red-50 border border-red-200 text-red-700 px-2 py-0.5 font-mono">{m.attck_id} {m.technique}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {sandboxData.permalink && (
+                                    <a href={sandboxData.permalink} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 mt-4 text-[10px] font-mono text-blue-600 hover:text-blue-800 transition-colors">
+                                        <ExternalLink size={10}/> View full report on Hybrid Analysis
+                                    </a>
+                                )}
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* Sandbox pending/error banners */}
+                    {sandboxData && (sandboxData.error || sandboxData.status === "pending") && (
+                        <motion.div initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.18 }} className="flex items-start gap-3 px-4 py-3 bg-gray-50 border border-gray-200 text-gray-500">
+                            <Info size={14} className="mt-0.5 shrink-0 text-gray-400" />
+                            <div>
+                                <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5">Sandbox {sandboxData.error ? 'Unavailable' : 'Pending'}</p>
+                                <p className="text-[10px] font-mono leading-relaxed">{sandboxData.error || sandboxData.message}</p>
+                                {sandboxData.permalink && <a href={sandboxData.permalink} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-blue-600 flex items-center gap-1 mt-1"><ExternalLink size={9}/> Check status</a>}
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* APK PERMISSIONS */}
+                    {apkInfo && apkInfo.is_apk && (
+                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.22 }} className="bg-white border border-gray-200 shadow-sm">
+                            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Smartphone size={14}/> Android APK Analysis</h3>
+                                {apkInfo.dangerous_permissions?.length > 0 && <span className="text-[9px] bg-amber-900 text-amber-400 px-2 py-1 font-mono uppercase tracking-widest">{apkInfo.dangerous_permissions.length} DANGEROUS</span>}
+                            </div>
+                            <div className="p-4">
+                                <div className="grid grid-cols-2 gap-3 font-mono text-[10px] mb-4">
+                                    {apkInfo.package && <div><span className="text-gray-400 uppercase">Package:</span> <span className="text-gray-700">{apkInfo.package}</span></div>}
+                                    {apkInfo.app_label && <div><span className="text-gray-400 uppercase">App Name:</span> <span className="text-gray-700">{apkInfo.app_label}</span></div>}
+                                </div>
+                                {apkInfo.dangerous_permissions?.length > 0 && (
+                                    <div className="border-t border-gray-100 pt-3">
+                                        <span className="text-[10px] font-mono text-[#FF3B00] uppercase">Dangerous Permissions:</span>
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {apkInfo.dangerous_permissions.map((p: string) => (
+                                                <span key={p} className="text-[9px] bg-red-50 border border-red-200 text-red-700 px-2 py-0.5 font-mono">{p.replace('android.permission.', '')}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {apkInfo.permissions?.length > 0 && (
+                                    <div className="border-t border-gray-100 pt-3 mt-3">
+                                        <span className="text-[10px] font-mono text-gray-400 uppercase">All Permissions ({apkInfo.permissions.length}):</span>
+                                        <div className="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">
+                                            {apkInfo.permissions.map((p: string) => (
+                                                <span key={p} className="text-[9px] bg-gray-100 px-2 py-0.5 font-mono text-gray-600">{p.replace('android.permission.', '')}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* ARCHIVE CONTENTS */}
+                    {archiveContents.length > 0 && (
+                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.25 }} className="bg-white border border-gray-200 shadow-sm">
+                            <div className="p-4 border-b border-gray-200">
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Archive size={14}/> Archive Contents ({archiveContents.length} files)</h3>
+                            </div>
+                            <div className="p-4">
+                                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                                    {archiveContents.map((f: any, i: number) => (
+                                        <div key={i} className="flex items-center justify-between font-mono text-[10px] py-1.5 px-2 bg-gray-50 border border-gray-100">
+                                            <div className="flex items-center gap-2">
+                                                <Package size={10} className="text-gray-400"/>
+                                                <span className="text-gray-700">{f.name}</span>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                {f.is_pe && <span className="text-[8px] bg-amber-100 text-amber-700 px-1.5 py-0.5 uppercase">PE</span>}
+                                                {f.ioc_count > 0 && <span className="text-[8px] text-[#FF3B00]">{f.ioc_count} IOCs</span>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         </motion.div>
                     )}

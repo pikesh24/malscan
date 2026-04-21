@@ -273,6 +273,52 @@ def _check_ioc_volume(iocs):
     return score, reasons
 
 
+def _check_apk_permissions(apk_data):
+    """Score boost based on dangerous Android permissions."""
+    score, reasons = 0, []
+    if not apk_data or not apk_data.get("is_apk"):
+        return score, reasons
+    dangerous = apk_data.get("dangerous_permissions", [])
+    if len(dangerous) >= 5:
+        score = 35
+        reasons.append(f"APK requests {len(dangerous)} dangerous permissions — highly suspicious.")
+    elif len(dangerous) >= 3:
+        score = 20
+        reasons.append(f"APK requests {len(dangerous)} dangerous permissions.")
+    elif len(dangerous) >= 1:
+        score = 10
+        reasons.append(f"APK requests dangerous permission(s): {', '.join(dangerous[:3])}.")
+
+    # SMS read+send combo is a classic spyware pattern
+    perm_set = set(dangerous)
+    if {"android.permission.READ_SMS", "android.permission.SEND_SMS"}.issubset(perm_set):
+        score += 15
+        reasons.append("APK requests both READ_SMS and SEND_SMS — common in SMS-stealing malware.")
+    if "android.permission.BIND_DEVICE_ADMIN" in perm_set:
+        score += 15
+        reasons.append("APK requests BIND_DEVICE_ADMIN — can lock device or prevent uninstall.")
+    return score, reasons
+
+
+def _check_sandbox(osint):
+    """Score boost based on Hybrid Analysis sandbox verdict."""
+    score, reasons = 0, []
+    sb = osint.get("sandbox")
+    if not sb or sb.get("error") or sb.get("status") == "pending":
+        return score, reasons
+
+    if sb.get("is_malicious"):
+        score = 50
+        reasons.append("Hybrid Analysis sandbox flagged this file as malicious.")
+    elif sb.get("threat_score") and sb["threat_score"] >= 50:
+        score = 30
+        reasons.append(f"Hybrid Analysis assigned a threat score of {sb['threat_score']}/100.")
+    elif sb.get("threat_score") and sb["threat_score"] >= 25:
+        score = 15
+        reasons.append(f"Hybrid Analysis assigned a moderate threat score of {sb['threat_score']}/100.")
+    return score, reasons
+
+
 # ── Known-hash check ─────────────────────────────────────────────────────────
 
 def _check_known_hashes(file_hash: Optional[str]):
@@ -320,6 +366,8 @@ def calculate_score(analysis_data: dict) -> dict:
         s, r      = _check_ioc_volume(iocs);       total += s; all_reasons += r
         s, r      = _check_virustotal(osint);      total += s; all_reasons += r
         s, r      = _check_urlscan(osint);         total += s; all_reasons += r
+        s, r      = _check_apk_permissions(analysis_data.get("apk", {})); total += s; all_reasons += r
+        s, r      = _check_sandbox(osint);         total += s; all_reasons += r
 
     final_score = min(total, 100)
     verdict = "Malicious" if final_score >= 70 else "Suspicious" if final_score >= 35 else "Clear"
@@ -347,6 +395,7 @@ def calculate_score(analysis_data: dict) -> dict:
             "dns_a_records":   dns.get("A", []),
             "virustotal":      osint.get("virustotal", {}).get("stats") if "virustotal" in osint else None,
             "urlscan":         osint.get("urlscan") if "urlscan" in osint else None,
+            "sandbox":         osint.get("sandbox") if "sandbox" in osint else None,
         },
         "graph_nodes": graph_nodes,
         "graph_edges": graph_edges,

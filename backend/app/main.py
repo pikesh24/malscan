@@ -12,7 +12,7 @@ Changes made by Team Member 4:
   - Store original_filename in job for the report
 """
 
-import hashlib, os, uuid, sys, time
+import hashlib, os, uuid, sys, time, zipfile, tempfile
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException, Body
 from pydantic import BaseModel
@@ -31,8 +31,10 @@ try:
     from analysis_engine.static_analyzer import extract_iocs, analyze_pe
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
-    from analysis_engine.vt_client import get_url_report
+    from analysis_engine.vt_client import get_url_report, get_file_report
     from analysis_engine.urlscan_client import scan_url as urlscan_scan
+    from analysis_engine.apk_analyzer import analyze_apk
+    from analysis_engine.sandbox_client import submit_file as sandbox_submit
     from attribution_module.scoring import calculate_score
     from attribution_module.clustering import cluster_iocs
     from attribution_module.reporter import generate_report, get_report_path
@@ -59,6 +61,42 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # ── 1. Static Analysis ───────────────────────────────────────────────
         iocs    = extract_iocs(file_path)
         pe_info = analyze_pe(file_path)
+        apk_info = {}
+        archive_contents = []
+
+        # ── 1b. ZIP Extraction ───────────────────────────────────────────────
+        is_zip = zipfile.is_zipfile(file_path)
+        if is_zip and not original_filename.lower().endswith(".apk"):
+            try:
+                with zipfile.ZipFile(file_path, "r") as zf:
+                    extract_dir = tempfile.mkdtemp(prefix="malscan_zip_")
+                    zf.extractall(extract_dir)
+                    for root, dirs, files in os.walk(extract_dir):
+                        for fname in files:
+                            inner_path = os.path.join(root, fname)
+                            inner_iocs = extract_iocs(inner_path)
+                            inner_pe   = analyze_pe(inner_path)
+                            for k in ("ips", "domains", "urls"):
+                                iocs[k] = list(set(iocs.get(k, []) + inner_iocs.get(k, [])))
+                            pe_info["suspicious_sections"].extend(inner_pe.get("suspicious_sections", []))
+                            if inner_pe.get("is_pe"):
+                                pe_info["is_pe"] = True
+                                pe_info["imphash"] = pe_info.get("imphash") or inner_pe.get("imphash")
+                            archive_contents.append({
+                                "name": fname,
+                                "is_pe": inner_pe.get("is_pe", False),
+                                "ioc_count": len(inner_iocs.get("urls", [])) + len(inner_iocs.get("ips", [])),
+                            })
+            except Exception as ze:
+                print(f"ZIP extraction error: {ze}")
+
+        # ── 1c. APK Analysis ─────────────────────────────────────────────────
+        if original_filename.lower().endswith(".apk"):
+            apk_info = analyze_apk(file_path)
+            # Merge APK-extracted IOCs
+            for k in ("ips", "urls"):
+                apk_key = f"dex_{k}"
+                iocs[k] = list(set(iocs.get(k, []) + apk_info.get(apk_key, [])))
 
         # ── 2. OSINT Enrichment ──────────────────────────────────────────────
         osint_data = {}
@@ -74,12 +112,11 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         if ips:
             osint_data["geoip"] = get_geoip(ips[0])
 
-        # ── VirusTotal + URLScan.io Integration ─────────────────────────────
-        # Determine the primary URL to scan (submitted URL or first extracted)
+        # ── VirusTotal: URL scan ─────────────────────────────────────────────
         scan_target_url = submitted_url or (iocs.get("urls", [None])[0] if iocs.get("urls") else None)
+        vt_key = os.environ.get("VT_API_KEY")
 
         if scan_target_url:
-            vt_key = os.environ.get("VT_API_KEY")
             if vt_key:
                 vt_result = get_url_report(scan_target_url, vt_key)
                 if "error" not in vt_result:
@@ -88,11 +125,24 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             us_key = os.environ.get("URLSCAN_API_KEY")
             if us_key:
                 us_result = urlscan_scan(scan_target_url, us_key)
-                osint_data["urlscan"] = us_result  # Pass to frontend even on error
+                osint_data["urlscan"] = us_result
+
+        # ── VirusTotal: File hash lookup (for uploaded files) ────────────────
+        if not submitted_url and vt_key:
+            vt_file_result = get_file_report(job.file_hash, vt_key)
+            if "error" not in vt_file_result and "status" not in vt_file_result:
+                osint_data["virustotal"] = vt_file_result
+
+        # ── Hybrid Analysis Sandbox (for file uploads only) ──────────────────
+        if not submitted_url:
+            ha_key = os.environ.get("HYBRID_ANALYSIS_API_KEY")
+            if ha_key:
+                sandbox_result = sandbox_submit(file_path, ha_key)
+                osint_data["sandbox"] = sandbox_result
 
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
-            "file_hash": job.file_hash,   # <-- enables known-hash detection
+            "file_hash": job.file_hash,
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "is_pe":    pe_info.get("is_pe", False),
@@ -101,6 +151,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "osint": osint_data,
             "url":   analyze_url(iocs["urls"][0]) if iocs.get("urls") else {},
             "iocs":  iocs,
+            "apk":   apk_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────
@@ -131,6 +182,10 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # Merge file metadata into results so frontend can display them
         score_data["file_hash"] = job.file_hash
         score_data["imphash"]   = pe_info.get("imphash")
+        if archive_contents:
+            score_data["archive_contents"] = archive_contents
+        if apk_info.get("is_apk"):
+            score_data["apk_info"] = apk_info
 
         job.results = score_data
         job.status  = "Completed"
