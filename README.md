@@ -2,6 +2,13 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+.env
+```bash
+VT_API_KEY="56e6ab31a1cff4beeb14d1d5ca5d393b0c2cfd59d9833700a120f29bd1a5b543"
+URLSCAN_API_KEY="019d23a2-6586-767d-b293-ac664c2ab95a"
+HYBRID_ANALYSIS_API_KEY="abvjcmsmc07d6304ra2hl8rsb34d67dbwqrc5t4wfceafa51ps6jwtms9cd04ada"
+```
+
 First, inside backend folder run:
 ```bash
 uvicorn app.main:app --reload
