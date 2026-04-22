@@ -44,8 +44,8 @@ def scan_url(url: str, api_key: str) -> dict:
                 pass
 
             # URLScan blocks scans of major/popular domains
-            if "prevented" in error_detail.lower() or "blocked" in error_detail.lower():
-                return {"error": "URLScan does not allow scanning this domain (major site blocked by policy)."}
+            if "prevented" in error_detail.lower() or "blocked" in error_detail.lower() or "silly" in error_detail.lower():
+                return {"error": "URLScan does not allow scanning this domain (popular site blocked by policy)."}
             if error_detail:
                 return {"error": f"URLScan error: {error_detail}"}
             return {"error": f"URLScan submit failed (HTTP {submit.status_code})"}
@@ -56,8 +56,8 @@ def scan_url(url: str, api_key: str) -> dict:
         if not result_url:
             return {"error": "No result URL returned from URLScan."}
 
-        # 2. Poll for completion (up to ~30s)
-        for attempt in range(6):
+        # 2. Poll for completion (up to ~100s)
+        for attempt in range(20):
             time.sleep(5)
             result = requests.get(result_url, timeout=15)
             if result.status_code == 200:
@@ -78,7 +78,7 @@ def scan_url(url: str, api_key: str) -> dict:
                     "outgoing_domains": (lists.get("domains") or [])[:10],
                 }
 
-        return {"status": "pending", "message": "URLScan analysis still running."}
+        return {"error": "URLScan analysis timed out after 100 seconds. The site may be slow or blocked."}
 
     except requests.exceptions.Timeout:
         return {"error": "URLScan request timed out."}

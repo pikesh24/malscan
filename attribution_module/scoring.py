@@ -258,6 +258,29 @@ def _check_urlscan(osint):
     return score, reasons
 
 
+def _check_hybrid_analysis(osint):
+    """Score boost based on Hybrid Analysis (Falcon Sandbox) verdict."""
+    score, reasons = 0, []
+    ha = osint.get("hybrid_analysis")
+    if ha and not ha.get("error"):
+        verdict = ha.get("verdict", "").lower()
+        threat_score = ha.get("threat_score", 0)
+
+        if verdict == "malicious" or threat_score >= 75:
+            score = 100  # High-confidence sandbox match
+            reasons.append(f"Hybrid Analysis sandbox flagged artifact as MALICIOUS (Score: {threat_score}).")
+        elif verdict == "suspicious" or threat_score >= 50:
+            score = 50
+            reasons.append(f"Hybrid Analysis sandbox flagged artifact as SUSPICIOUS (Score: {threat_score}).")
+
+        # Add top behavioral indicator to summary
+        indicators = ha.get("indicators", [])
+        if indicators:
+            reasons.append(f"Sandbox Alert: {indicators[0]}")
+
+    return score, reasons
+
+
 def _check_ioc_volume(iocs):
     score, reasons = 0, []
     ip_count = len(iocs.get("ips") or [])
@@ -347,6 +370,7 @@ def calculate_score(analysis_data: dict) -> dict:
         s, r      = _check_ioc_volume(iocs);       total += s; all_reasons += r
         s, r      = _check_virustotal(osint);      total += s; all_reasons += r
         s, r      = _check_urlscan(osint);         total += s; all_reasons += r
+        s, r      = _check_hybrid_analysis(osint); total += s; all_reasons += r
         s, r      = _check_apk_permissions(analysis_data.get("apk", {})); total += s; all_reasons += r
 
     final_score = min(total, 100)
@@ -375,6 +399,7 @@ def calculate_score(analysis_data: dict) -> dict:
             "dns_a_records":   dns.get("A", []),
             "virustotal":      osint.get("virustotal", {}).get("stats") if "virustotal" in osint else None,
             "urlscan":         osint.get("urlscan") if "urlscan" in osint else None,
+            "hybrid_analysis": osint.get("hybrid_analysis") if "hybrid_analysis" in osint else None,
         },
         "graph_nodes": graph_nodes,
         "graph_edges": graph_edges,

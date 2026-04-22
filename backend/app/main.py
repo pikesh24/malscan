@@ -29,11 +29,12 @@ if parent_dir not in sys.path:
 
 try:
     from analysis_engine.static_analyzer import extract_iocs, analyze_pe
-    from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
+    from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip, get_all_geoip
     from analysis_engine.url_processor import analyze_url
     from analysis_engine.vt_client import get_url_report, get_file_report
     from analysis_engine.urlscan_client import scan_url as urlscan_scan
     from analysis_engine.apk_analyzer import analyze_apk
+    from analysis_engine.hybrid_analysis_client import submit_file as ha_submit
     from attribution_module.scoring import calculate_score
     from attribution_module.clustering import cluster_iocs
     from attribution_module.reporter import generate_report, get_report_path
@@ -41,7 +42,8 @@ except ImportError as e:
     print(f"Warning: Module import failed: {e}")
 
 app = FastAPI()
-VAULT_DIR = "app/vault"
+from pathlib import Path
+VAULT_DIR = str(Path(__file__).resolve().parent / "vault")
 os.makedirs(VAULT_DIR, exist_ok=True)
 init_db()
 
@@ -106,10 +108,11 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             osint_data["whois"] = get_whois(domains[0])
             osint_data["dns"]   = get_dns_records(domains[0])
 
-        # GeoIP — use first extracted IP if available
+        # GeoIP — resolve ALL extracted IPs for the map
         ips = iocs.get("ips", [])
         if ips:
-            osint_data["geoip"] = get_geoip(ips[0])
+            osint_data["geoip"] = get_geoip(ips[0])  # keep single for legacy
+            osint_data["ip_geolocations"] = get_all_geoip(ips)
 
         # ── VirusTotal: URL scan ─────────────────────────────────────────────
         scan_target_url = submitted_url or (iocs.get("urls", [None])[0] if iocs.get("urls") else None)
@@ -131,6 +134,16 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             vt_file_result = get_file_report(job.file_hash, vt_key)
             if "error" not in vt_file_result and "status" not in vt_file_result:
                 osint_data["virustotal"] = vt_file_result
+
+        # ── Hybrid Analysis: File Sandbox ────────────────────────────────────
+        ha_key = os.environ.get("HYBRID_ANALYSIS_API_KEY")
+        if not submitted_url and ha_key:
+            # file_path is now always an absolute path (VAULT_DIR is absolute)
+            if os.path.exists(file_path):
+                ha_result = ha_submit(file_path, ha_key)
+                osint_data["hybrid_analysis"] = ha_result
+            else:
+                osint_data["hybrid_analysis"] = {"error": f"File not found in vault at: {file_path}"}
 
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
@@ -178,6 +191,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             score_data["archive_contents"] = archive_contents
         if apk_info.get("is_apk"):
             score_data["apk_info"] = apk_info
+        # Pass IP geolocations for the map widget
+        if osint_data.get("ip_geolocations"):
+            score_data["ip_geolocations"] = osint_data["ip_geolocations"]
 
         job.results = score_data
         job.status  = "Completed"

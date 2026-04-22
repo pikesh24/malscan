@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>MalScan Pro — Report b2644d70-157f-41b1-9b86-505aa8f5c2e7</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0A0A0A;
+    --surface: #121212;
+    --border:  #222;
+    --accent:  #FF3B00;
+    --text:    #F0F0F0;
+    --muted:   #666;
+    --green:   #22C55E;
+    --amber:   #F59E0B;
+    --red:     #EF4444;
+    --mono:    'Courier New', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif;
+         font-size: 14px; line-height: 1.6; padding: 2rem; }
+  header { display: flex; justify-content: space-between; align-items: center;
+           border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-dot { width: 12px; height: 12px; background: var(--accent); }
+  .logo-text { font-size: 13px; font-family: var(--mono); font-weight: bold;
+               letter-spacing: 0.2em; text-transform: uppercase; }
+  .job-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 4px; padding: 1.5rem; }
+  .card-title { font-size: 10px; font-family: var(--mono); letter-spacing: 0.25em;
+                text-transform: uppercase; color: var(--muted); margin-bottom: 1rem;
+                padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  .verdict-badge { display: inline-block; padding: 6px 18px; border-radius: 2px;
+                   font-family: var(--mono); font-size: 13px; font-weight: bold;
+                   letter-spacing: 0.15em; text-transform: uppercase; }
+  .badge-Malicious  { background: rgba(239,68,68,0.15);  color: var(--red);   border: 1px solid var(--red); }
+  .badge-Suspicious { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid var(--amber); }
+  .badge-Clear      { background: rgba(34,197,94,0.15);  color: var(--green); border: 1px solid var(--green); }
+  .score-bar-wrap { margin: 1rem 0; }
+  .score-bar-track { background: #222; height: 6px; border-radius: 3px; overflow: hidden; }
+  .score-bar-fill  { height: 100%; border-radius: 3px;
+                     background: var(--green); 
+                     width: 0%; }
+  .score-label { display: flex; justify-content: space-between; font-family: var(--mono);
+                 font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .reasons-list { list-style: none; }
+  .reasons-list li { font-size: 12px; color: #ccc; padding: 6px 0;
+                     border-bottom: 1px solid var(--border); display: flex; gap: 10px; }
+  .reasons-list li:last-child { border-bottom: none; }
+  .bullet { color: var(--accent); flex-shrink: 0; }
+  .kv-table { width: 100%; border-collapse: collapse; }
+  .kv-table td { padding: 6px 4px; font-size: 12px; vertical-align: top; }
+  .kv-table td:first-child { color: var(--muted); font-family: var(--mono); font-size: 11px;
+                              white-space: nowrap; padding-right: 16px; width: 130px; }
+  .kv-table td:last-child  { color: var(--text); word-break: break-all; }
+  .kv-table tr { border-bottom: 1px solid var(--border); }
+  .kv-table tr:last-child { border-bottom: none; }
+  .ioc-list { list-style: none; max-height: 220px; overflow-y: auto; }
+  .ioc-list li { display: flex; justify-content: space-between; align-items: center;
+                 padding: 5px 0; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 11px; }
+  .ioc-list li:last-child { border-bottom: none; }
+  .ioc-type { color: var(--accent); width: 60px; flex-shrink: 0; letter-spacing: 0.1em; }
+  .ioc-val  { color: #ccc; flex: 1; word-break: break-all; }
+  .cluster-item { background: rgba(255,59,0,0.05); border: 1px solid rgba(255,59,0,0.2);
+                  border-radius: 3px; padding: 10px 14px; margin-bottom: 8px; font-size: 12px; }
+  .cluster-item p { color: #aaa; margin-top: 4px; font-size: 11px; }
+  .full-width { grid-column: 1 / -1; }
+  .no-data { color: var(--muted); font-size: 12px; font-style: italic; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+           font-family: var(--mono); font-size: 10px; color: var(--muted);
+           display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <span class="logo-text">MalScan Pro // Forensic Report</span>
+  </div>
+  <div class="job-meta">
+    <div>JOB ID: b2644d70-157f-41b1-9b86-505aa8f5c2e7</div>
+    <div>GENERATED: 2026-04-22 14:16:46 UTC</div>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- VERDICT CARD -->
+  <div class="card">
+    <div class="card-title">Analysis Verdict</div>
+    <span class="verdict-badge badge-Clear">Clear</span>
+    <div class="score-bar-wrap" style="margin-top:1.25rem;">
+      <div class="score-label"><span>Threat Score</span><span>0 / 100</span></div>
+      <div class="score-bar-track"><div class="score-bar-fill"></div></div>
+    </div>
+    <ul class="reasons-list" style="margin-top:1rem;">
+      
+      <li><span class="bullet">&rsaquo;</span> No suspicious indicators found.</li>
+      
+    </ul>
+  </div>
+
+  <!-- OSINT SUMMARY CARD -->
+  <div class="card">
+    <div class="card-title">OSINT Attribution Summary</div>
+    
+    
+    <table class="kv-table">
+      <tr><td>Registrar</td><td>N/A</td></tr>
+      <tr><td>Domain Age</td><td>Unknown</td></tr>
+      <tr><td>ASN</td><td>N/A</td></tr>
+      <tr><td>Hosting</td><td>N/A</td></tr>
+      <tr><td>Country</td><td>N/A </td></tr>
+      <tr><td>DNS A Records</td><td>None resolved</td></tr>
+    </table>
+    
+  </div>
+
+  <!-- IOC TABLE -->
+  <div class="card">
+    <div class="card-title">Extracted Indicators (IoCs)</div>
+    
+    
+    <ul class="ioc-list">
+      
+      
+      
+      
+      <li><span class="ioc-val no-data">No IoCs extracted.</span></li>
+      
+    </ul>
+    
+  </div>
+
+  <!-- ARTIFACT METADATA -->
+  <div class="card">
+    <div class="card-title">Artifact Metadata</div>
+    <table class="kv-table">
+      <tr><td>SHA-256</td><td style="font-size:10px;">26f40f8d7e8e33376fd9a1c4c9a13d84cff2999e230b178fe678f1a08f6ff1a7</td></tr>
+      <tr><td>Filename</td><td>test_artifact.zip</td></tr>
+      <tr><td>Is PE</td><td>False</td></tr>
+      <tr><td>Imphash</td><td style="font-size:10px;">N/A</td></tr>
+      
+    </table>
+  </div>
+
+  <!-- INFRASTRUCTURE CLUSTERS -->
+  <div class="card full-width">
+    <div class="card-title">Infrastructure Clusters</div>
+    
+    
+      <p class="no-data">No cross-job infrastructure clusters detected for this submission.</p>
+    
+  </div>
+
+</div>
+
+<footer>
+  <span>MalScan Pro — Forensic Attribution Engine v1.0</span>
+  <span>This report is for investigative purposes only. Not a substitute for professional threat analysis.</span>
+</footer>
+
+</body>
+</html>

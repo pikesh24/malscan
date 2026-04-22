@@ -2,6 +2,12 @@
 
 import { use, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
+import dynamic from "next/dynamic"
+
+const GeoMap = dynamic(() => import('../../components/GeoMap'), { 
+    ssr: false, 
+    loading: () => <div className="h-[350px] w-full bg-gray-100 flex items-center justify-center font-mono text-xs text-gray-500 border border-gray-200">LOADING MAP...</div> 
+})
 import { motion } from "framer-motion"
 import { ShieldAlert, Download, Share2, Globe, FileCode, Cpu, Hash, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Network, Shield, Package, Archive, Smartphone } from "lucide-react"
 
@@ -213,10 +219,12 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
     const imphash = reportData?.imphash || "N/A"
     const vtStats = reportData?.osint_summary?.virustotal || null
     const urlscanData = reportData?.osint_summary?.urlscan || null
+    const haData = reportData?.osint_summary?.hybrid_analysis || null
     const apkInfo = reportData?.apk_info || null
     const archiveContents = reportData?.archive_contents || []
     const graphNodes = reportData?.graph_nodes || []
     const graphEdges = reportData?.graph_edges || []
+    const ipGeolocations = reportData?.ip_geolocations || []
 
     // Build IOC rows from real backend data
     const indicators = reportData?.indicators || {}
@@ -360,6 +368,71 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                         </motion.div>
                     )}
 
+                    {/* Hybrid Analysis (Falcon Sandbox) Result */}
+                    {haData && (
+                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.18 }} className="bg-white border border-gray-200 shadow-sm">
+                            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Cpu size={14}/> Hybrid Analysis Sandbox</h3>
+                                {haData.error ? (
+                                     <span className="text-[9px] px-2 py-1 font-mono uppercase bg-gray-100 text-gray-500">Error</span>
+                                ) : (
+                                    <div className="flex gap-3 items-center">
+                                        <span className="text-[10px] font-mono text-gray-400 uppercase">Score: {haData.threat_score}/100</span>
+                                        <span className={`text-[9px] px-2 py-1 font-mono uppercase tracking-widest ${haData.verdict === 'malicious' ? 'bg-red-900 text-[#FF3B00]' : 'bg-amber-900 text-amber-400'}`}>
+                                            {(haData.verdict || 'unknown').toUpperCase()}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="p-4">
+                                {haData.error ? (
+                                    <div className="text-[10px] font-mono text-gray-500 italic py-2 flex items-center gap-2">
+                                        <Info size={12} className="shrink-0" /> Sandbox Error: {haData.error}
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="grid grid-cols-2 gap-3 font-mono text-[10px] mb-4">
+                                            {haData.environment_description && <div><span className="text-gray-400 uppercase">Env:</span> <span className="text-gray-700">{haData.environment_description}</span></div>}
+                                            {haData.job_id && <div><span className="text-gray-400 uppercase">Job ID:</span> <span className="text-gray-700">{haData.job_id}</span></div>}
+                                        </div>
+                                        
+                                        {haData.mitre_attcks && haData.mitre_attcks.length > 0 && (
+                                            <div className="mt-4 border-t border-gray-100 pt-3">
+                                                <span className="text-[10px] font-mono text-[#FF3B00] uppercase">MITRE ATT&CK Techniques:</span>
+                                                <div className="flex flex-wrap gap-1 mt-2">
+                                                    {haData.mitre_attcks.map((t: string) => (
+                                                        <span key={t} className="text-[9px] bg-red-50 border border-red-100 px-2 py-0.5 font-mono text-red-700">{t}</span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {haData.indicators && haData.indicators.length > 0 && (
+                                            <div className="mt-4 border-t border-gray-100 pt-3">
+                                                <span className="text-[10px] font-mono text-gray-400 uppercase">Behavioral Indicators:</span>
+                                                <div className="space-y-1.5 mt-2">
+                                                    {haData.indicators.map((i: string, idx: number) => (
+                                                        <div key={idx} className="text-[9px] font-mono text-gray-600 flex items-start gap-2">
+                                                            <span className="text-[#FF3B00]">•</span> {i}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {haData.report_url && (
+                                            <div className="mt-6 border-t border-gray-100 pt-4">
+                                                <a href={haData.report_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-[10px] font-bold text-[#FF3B00] hover:underline uppercase tracking-widest">
+                                                    View Full Forensic Sandbox Report <ExternalLink size={10} />
+                                                </a>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </motion.div>
+                    )}
+
                     {/* URLScan info banner when sandbox is unavailable */}
                     {urlscanData && urlscanData.error && (
                         <motion.div initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.15 }} className="flex items-start gap-3 px-4 py-3 bg-gray-50 border border-gray-200 text-gray-500">
@@ -428,6 +501,19 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                                         </div>
                                     ))}
                                 </div>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* GEO-LOCATION MAP */}
+                    {ipGeolocations.length > 0 && (
+                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.28 }} className="bg-white border border-gray-200 shadow-sm">
+                            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Globe size={14} /> Attacker Geolocation</h3>
+                                <span className="text-[10px] font-mono text-gray-400">{ipGeolocations.length} IPs MAPPED</span>
+                            </div>
+                            <div className="p-4 bg-gray-50">
+                                <GeoMap ipData={ipGeolocations} />
                             </div>
                         </motion.div>
                     )}

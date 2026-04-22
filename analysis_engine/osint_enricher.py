@@ -28,18 +28,19 @@ def get_dns_records(domain: str) -> dict:
             answers = dns.resolver.resolve(domain, record_type)
             records[record_type] = [rdata.to_text() for rdata in answers]
         except Exception:
-            # Common to not find certain records
             pass
             
     return records
 
 def get_geoip(ip_address: str) -> dict:
     """
-    Queries a free GeoIP service (ip-api.com) for geolocation and ASN data.
-    Note: For production, a reliable/paid API or local MaxMind database is recommended.
+    Queries ip-api.com for geolocation, ASN, and lat/lon coordinates.
     """
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip_address}?fields=status,message,country,countryCode,isp,org,as")
+        response = requests.get(
+            f"http://ip-api.com/json/{ip_address}?fields=status,message,country,countryCode,isp,org,as,lat,lon",
+            timeout=5
+        )
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
@@ -48,9 +49,37 @@ def get_geoip(ip_address: str) -> dict:
                     "countryCode": data.get("countryCode"),
                     "isp":         data.get("isp"),
                     "asn":         data.get("as"),
+                    "lat":         data.get("lat"),
+                    "lon":         data.get("lon"),
                 }
             else:
                 return {"error": data.get("message")}
     except Exception as e:
-         return {"error": str(e)}
+        return {"error": str(e)}
     return {"error": "Unknown error in GeoIP lookup"}
+
+
+def get_all_geoip(ip_list: list) -> list:
+    """
+    Resolves geolocation for a list of IPs. Skips private/reserved ranges.
+    Returns a list of dicts with ip + geo fields for map pin rendering.
+    """
+    import ipaddress
+    results = []
+    seen = set()
+    for ip in ip_list:
+        if ip in seen:
+            continue
+        seen.add(ip)
+        try:
+            addr = ipaddress.ip_address(ip)
+            if addr.is_private or addr.is_loopback or addr.is_reserved:
+                # Include private IPs in results but flag them so the UI can label them
+                results.append({"ip": ip, "private": True, "country": "Private/LAN"})
+                continue
+        except ValueError:
+            continue
+        geo = get_geoip(ip)
+        if "error" not in geo and geo.get("lat") is not None:
+            results.append({"ip": ip, **geo})
+    return results
