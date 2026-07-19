@@ -43,6 +43,7 @@ Test files apk/
 # ── Local-only notes (personal study/audit notes, not shipped) ─────────────────
 CODEBASE_WALKTHROUGH.md
 AUDIT_REPORT.md
+CLAUDE.md
 
 # ── OS / IDE ───────────────────────────────────────────────────────────────────
 .DS_Store

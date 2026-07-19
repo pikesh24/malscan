@@ -113,6 +113,20 @@ SAFE_DOMAIN_PATTERNS = {
     "localhost", "127.0.0.1", "0.0.0.0", "::1",
     "schemas.microsoft.com", "purl.org", "dublincore.org",
     "apple.com", "adobe.com", "verisign.com",
+    # RFC 2606 reserved documentation/placeholder domains — never real
+    # infrastructure, but low-quality threat-intel feeds sometimes tag them
+    # anyway (e.g. an unconfigured malware-config default gets submitted as
+    # an IOC by mistake). Any hit against these is definitionally noise.
+    # NOTE: this list deletes a domain from the report entirely (no IOC, no
+    # geolocation, no URLScan) — only ever add genuinely meaningless
+    # boilerplate here (reserved names, XML/schema namespaces). Real third-
+    # party infrastructure (jetbrains.com, crbug.com, analytics/ad SDKs) is
+    # deliberately NOT listed: it isn't a threat, but it's real context the
+    # report should still show and enrich.
+    "example.com", "example.net", "example.org", "example.edu",
+    # Android manifest/schema XML namespace — the schemas.android.com
+    # equivalent of schemas.microsoft.com above; every Android app embeds it.
+    "schemas.android.com",
 }
 
 def _is_safe_host(host: str) -> bool:
