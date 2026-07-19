@@ -8,7 +8,10 @@ class ScanJob(Base):
     __tablename__ = "scan_jobs"
     job_id = Column(String, primary_key=True)
     status = Column(String, default="Submitted", index=True) # Submitted, Processing, Completed
-    file_hash = Column(String)
+    # Indexed: the 24h result cache looks up prior completed jobs by file_hash
+    # (see _find_cached_result in app/main.py) so a re-scan of the same bytes
+    # returns the same verdict without re-running the whole pipeline.
+    file_hash = Column(String, index=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     results = Column(JSON, nullable=True) # Final results from Attribution Engine
 

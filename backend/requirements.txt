@@ -9,6 +9,15 @@ python-multipart==0.0.18
 python-dotenv==1.1.0
 requests==2.32.3
 pefile==2024.8.26
+# RAR archive support — recurse into .rar containers and scan the inner files
+# (malware is frequently shipped this way). `rarfile` itself is pure-Python but
+# needs an external decompression backend on PATH — any ONE of:
+#   unrar   (RARLAB, most common)   |   bsdtar (libarchive; msys2 on Windows)
+#   7z / 7za / 7zz (p7zip / 7-Zip)  |   unar
+# On Debian/Render:  apt-get install unrar-free   (or p7zip-full / libarchive-tools)
+# With no backend installed, RAR *inner* extraction is skipped gracefully — the
+# archive is still hashed and top-level scanned (same pattern as optional YARA).
+rarfile==4.3
 playwright==1.60.0
 # After installing, also run: playwright install chromium
 # (headless Chromium used to render the HTML report to a real PDF — see

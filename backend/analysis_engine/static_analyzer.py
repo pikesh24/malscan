@@ -12,6 +12,7 @@ Static file analysis:
 import re
 import os
 import math
+import ipaddress
 
 # ── Magic byte signatures (true file type detection) ─────────────────────────
 
@@ -138,15 +139,87 @@ def detect_file_type(file_path: str, data: bytes = None) -> dict:
     return result
 
 
+def is_reportable_ip(ip_str: str) -> bool:
+    """True only for a globally-routable, real IPv4/IPv6 address worth reporting.
+
+    Rejects: malformed octets, and every non-routable class — private, loopback,
+    link-local, reserved, unspecified, multicast — plus x.x.x.0 network-base
+    quads. Extracting IOCs from a raw binary throws off a lot of these
+    (`127.0.0.1`, `0.0.0.0`, and a stray `2.3.0.0` that geolocated to a bogus
+    "France" origin); this is the single gate that keeps them out of the report
+    and out of every downstream geo/abuse lookup. Shared with app/main.py.
+    """
+    try:
+        addr = ipaddress.ip_address(ip_str.strip())
+    except ValueError:
+        return False
+    if (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_unspecified or addr.is_multicast):
+        return False
+    if not addr.is_global:
+        return False
+    # A trailing .0 quad is almost always a network base address embedded as a
+    # constant, not a host anyone talks to — drop it (kills the 2.3.0.0 case).
+    if isinstance(addr, ipaddress.IPv4Address) and ip_str.strip().split(".")[-1] == "0":
+        return False
+    return True
+
+
+def is_reportable_url(url: str) -> bool:
+    """True only for an http(s) URL whose host is a real FQDN or IP literal.
+
+    Kills the `http://mojibake`-style fragments that fall out of binaries (a
+    bare `http://` glued to a single word with no dot), which are worthless as
+    indicators and make URLScan return `Invalid URL format`. Shared with
+    app/main.py's pre-URLScan gate so extraction and enrichment agree.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse((url or "").strip())
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)   # bare-IP host is fine
+        return True
+    except ValueError:
+        pass
+    return "." in host   # otherwise require a dotted FQDN
+
+
+# Printable-ASCII run: space (0x20) through tilde (0x7E). Anything else — a NUL,
+# a high byte, UTF-16 padding — terminates the run. min length ~6 avoids noise.
+_PRINTABLE_RUN_RE = re.compile(rb"[\x20-\x7e]{6,}")
+
+
+def _ascii_runs(content: bytes):
+    """Yield decoded printable-ASCII string runs (`strings`-style)."""
+    for m in _PRINTABLE_RUN_RE.finditer(content):
+        yield m.group().decode("ascii", errors="ignore")
+
+
 def extract_iocs(file_path: str, data: bytes = None) -> dict:
     """
-    Extracts IPs, URLs, and domains from raw file content.
+    Extracts IPs and URLs from raw file content.
+
+    Regexes are run over printable-ASCII string *runs* (like the Unix `strings`
+    tool), NOT over the whole file naively decoded as UTF-8. Decoding a binary
+    as UTF-8 mangles high bytes into replacement/mojibake sequences that produce
+    junk "URLs" and invalid IPs; scanning real string runs instead keeps genuine
+    embedded indicators (e.g. `http://server.cricketacademygame.com/...`) intact
+    while dropping the garbage. Extracted IPs are validated with
+    `is_reportable_ip`. Output lists are sorted for deterministic downstream
+    selection (which indicator gets enriched must not depend on hash-set order).
     Pass `data` to reuse already-read bytes instead of re-reading from disk.
     """
     iocs = {"ips": set(), "domains": set(), "urls": set()}
 
     if data is None and not os.path.exists(file_path):
-        return {k: list(v) for k, v in iocs.items()}
+        return {k: sorted(v) for k, v in iocs.items()}
 
     ip_re  = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')
     url_re = re.compile(r'https?://[^\s\'"<>\]]+')
@@ -157,16 +230,18 @@ def extract_iocs(file_path: str, data: bytes = None) -> dict:
         else:
             with open(file_path, "rb") as f:
                 content = f.read()
-        text = content.decode("utf-8", errors="ignore")
 
-        for ip in ip_re.findall(text):
-            iocs["ips"].add(ip)
-        for url in url_re.findall(text):
-            iocs["urls"].add(url)
+        for run in _ascii_runs(content):
+            for ip in ip_re.findall(run):
+                if is_reportable_ip(ip):
+                    iocs["ips"].add(ip)
+            for url in url_re.findall(run):
+                if is_reportable_url(url):
+                    iocs["urls"].add(url)
     except Exception as e:
         print(f"Error extracting IoCs from {file_path}: {e}")
 
-    return {k: list(v) for k, v in iocs.items()}
+    return {k: sorted(v) for k, v in iocs.items()}
 
 
 def analyze_suspicious_strings(file_path: str, data: bytes = None) -> dict:

@@ -23,6 +23,11 @@ def init_db():
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_scan_jobs_status ON scan_jobs (status)"
             )
+            # Same rationale for the result cache lookup (file_hash + status +
+            # created_at). create_all won't add this to a pre-existing table.
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_scan_jobs_file_hash ON scan_jobs (file_hash)"
+            )
             conn.commit()
     except Exception:
         pass

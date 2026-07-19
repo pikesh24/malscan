@@ -9,7 +9,8 @@ import hashlib, os, re, uuid, sys, time, zipfile, tempfile, shutil
 import asyncio
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+from datetime import datetime, timedelta
+from urllib.parse import urlparse, urlunparse
 import requests
 
 # ── Safety limits ─────────────────────────────────────────────────────────────
@@ -38,7 +39,10 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 try:
-    from analysis_engine.static_analyzer import extract_iocs, analyze_pe, analyze_suspicious_strings
+    from analysis_engine.static_analyzer import (
+        extract_iocs, analyze_pe, analyze_suspicious_strings,
+        is_reportable_ip, is_reportable_url,
+    )
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
     from analysis_engine.vt_client import get_url_report, get_file_report
@@ -155,13 +159,169 @@ def _strip_safe_indicators(iocs: dict, keep: str = None) -> None:
     keep_set = {keep} if keep else set()
     iocs["urls"]    = [u for u in (iocs.get("urls") or [])    if u in keep_set or not _is_safe_url(u)]
     iocs["domains"] = [d for d in (iocs.get("domains") or []) if d in keep_set or not _is_safe_host(d)]
+    # Also drop safe-list IPs (127.0.0.1 / 0.0.0.0 live in SAFE_DOMAIN_PATTERNS):
+    # defence-in-depth alongside is_reportable_ip at extraction time.
+    iocs["ips"]     = [i for i in (iocs.get("ips") or [])     if i in keep_set or not _is_safe_host(i)]
 
 def _pick_best_url(urls: list) -> str | None:
-    """Returns the first URL that isn't from a known-safe domain, or None."""
+    """Returns the first well-formed URL that isn't from a known-safe domain.
+
+    Requires a real dotted/IP host (is_reportable_url) so a malformed indicator
+    scraped from a binary can't be sent to URLScan and trigger 'Invalid URL
+    format'. Returns None if there's no suitable URL.
+    """
     for url in (urls or []):
-        if not _is_safe_url(url):
+        if is_reportable_url(url) and not _is_safe_url(url):
             return url
     return None
+
+
+def _normalize_url(url: str) -> str:
+    """Semantics-preserving URL normalization for a stable cache key.
+
+    Lowercases scheme + host and drops a redundant default port and a bare
+    trailing '/', so `HTTP://Evil.COM/` and `http://evil.com` map to the same
+    hash (and therefore the same cached verdict). Path/query/fragment case is
+    left untouched. A bare hostname is just lowercased.
+    """
+    try:
+        url = (url or "").strip()
+        parsed = urlparse(url)
+        if not parsed.scheme:
+            # bare domain submission (no scheme) — hostnames are case-insensitive
+            return url.lower() if _DOMAIN_RE.match(url) else url
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return url
+        netloc = host
+        if parsed.port and not (
+            (parsed.scheme == "http" and parsed.port == 80)
+            or (parsed.scheme == "https" and parsed.port == 443)
+        ):
+            netloc = f"{host}:{parsed.port}"
+        path = "" if parsed.path == "/" else parsed.path
+        return urlunparse((parsed.scheme.lower(), netloc, path, parsed.params, parsed.query, parsed.fragment))
+    except Exception:
+        return url
+
+
+# ── Result cache (same file → same verdict, within 24h) ───────────────────────
+RESULT_CACHE_TTL_HOURS = 24
+
+def _find_cached_result(db, file_hash: str, exclude_job_id: str):
+    """Most-recent Completed, NON-partial ScanJob with identical bytes inside the
+    TTL. Returns its stored `results` (score_data) to copy, or None.
+
+    This is the core 'same file → same result, everywhere' guarantee: a re-scan
+    of the same content reuses the earlier verdict verbatim instead of re-running
+    a non-deterministic pipeline and re-hitting every external API. Partial
+    results (a key intel source didn't complete) are skipped so a timeout can't
+    freeze into the cache.
+    """
+    if not file_hash:
+        return None
+    cutoff = datetime.utcnow() - timedelta(hours=RESULT_CACHE_TTL_HOURS)
+    rows = (
+        db.query(ScanJob)
+        .filter(
+            ScanJob.file_hash == file_hash,
+            ScanJob.status == "Completed",
+            ScanJob.created_at >= cutoff,
+            ScanJob.job_id != exclude_job_id,
+        )
+        .order_by(ScanJob.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    for row in rows:
+        res = row.results
+        if res and not res.get("partial"):
+            return res
+    return None
+
+# ── Archive extraction (ZIP + RAR) ────────────────────────────────────────────
+# Malware is very commonly shipped inside a ZIP or RAR, so we recurse into both
+# and scan the inner files. Python's stdlib handles ZIP; RAR needs an external
+# decompression backend (unrar / bsdtar / 7z) driven via the `rarfile` library.
+# Following the same graceful-degradation pattern as YARA and Playwright: if no
+# backend is installed, RAR *inner* extraction is skipped (the archive is still
+# hashed and top-level scanned) rather than crashing the pipeline.
+def _configure_rar_backend() -> bool:
+    try:
+        import rarfile
+    except Exception:
+        return False
+    # rarfile walks its configured tool list and uses the first that works. Point
+    # each tool var at an absolute path we can find, so a backend that isn't on
+    # PATH (e.g. msys2's bsdtar on Windows) is still usable.
+    found = False
+    for attr, names in (
+        ("UNRAR_TOOL",   ["unrar", "unrar.exe"]),
+        ("UNAR_TOOL",    ["unar", "unar.exe"]),
+        ("BSDTAR_TOOL",  ["bsdtar", "bsdtar.exe"]),
+        ("SEVENZIP_TOOL",["7z", "7z.exe", "7za", "7zz"]),
+    ):
+        for n in names:
+            resolved = shutil.which(n)
+            if resolved:
+                setattr(rarfile, attr, resolved)
+                found = True
+                break
+    # Common Windows install locations that aren't on PATH.
+    for cand, attr in (
+        (r"C:\msys64\usr\bin\bsdtar.exe",        "BSDTAR_TOOL"),
+        (r"C:\msys64\ucrt64\bin\bsdtar.exe",     "BSDTAR_TOOL"),
+        (r"C:\Program Files\7-Zip\7z.exe",       "SEVENZIP_TOOL"),
+        (r"C:\Program Files (x86)\7-Zip\7z.exe", "SEVENZIP_TOOL"),
+    ):
+        if os.path.exists(cand):
+            setattr(rarfile, attr, cand)
+            found = True
+    return found
+
+RAR_ENABLED = _configure_rar_backend()
+if not RAR_ENABLED:
+    print("RAR extraction disabled: no unrar/bsdtar/7z backend found "
+          "(install one to scan inside .rar archives; RAR files are still hashed + top-level scanned).")
+
+
+def _open_extractable_archive(file_path: str):
+    """Open a supported, recursively-scannable container. Returns
+    (archive, members, kind) or (None, None, None). Callers exclude APKs
+    (handled by apk_analyzer). ZIP covers Office-OpenXML/JAR too."""
+    try:
+        if zipfile.is_zipfile(file_path):
+            zf = zipfile.ZipFile(file_path, "r")
+            return zf, zf.infolist(), "zip"
+    except Exception as e:
+        print(f"ZIP open failed: {e}")
+    if RAR_ENABLED:
+        try:
+            import rarfile
+            if rarfile.is_rarfile(file_path):
+                rf = rarfile.RarFile(file_path)
+                return rf, rf.infolist(), "rar"
+        except Exception as e:
+            print(f"RAR open failed: {e}")
+    return None, None, None
+
+# zipfile.ZipInfo and rarfile.RarInfo expose the same three member attributes,
+# so one loop handles both — these normalize the small API differences.
+def _member_name(m) -> str:
+    return getattr(m, "filename", "") or ""
+
+def _member_size(m) -> int:
+    return getattr(m, "file_size", 0) or 0
+
+def _member_is_dir(m) -> bool:
+    is_dir = getattr(m, "is_dir", None)
+    if callable(is_dir):
+        try:
+            return bool(is_dir())
+        except Exception:
+            pass
+    return _member_name(m).endswith("/")
+
 
 _osint_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="osint")
 init_db()
@@ -183,9 +343,32 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         return
 
     try:
+        scan_started_at = time.time()
+
+        # ── 0. Result cache (same file → same verdict, within 24h) ───────────
+        # If identical bytes were scanned in the last 24h with a complete
+        # (non-partial) result, reuse that verdict verbatim: a new job_id but an
+        # identical score/verdict/indicators. This is what makes the same file
+        # give the same answer on web and app, and avoids re-hitting every
+        # external API. File metadata (name, URL, duration) is refreshed to this
+        # request; the analytical result is copied unchanged.
+        cached = _find_cached_result(db, job.file_hash, exclude_job_id=job_id)
+        if cached is not None:
+            score_data = dict(cached)
+            score_data["original_filename"] = original_filename
+            score_data["cache_reuse"] = True
+            score_data["scan_duration_seconds"] = round(time.time() - scan_started_at, 2)
+            if submitted_url:
+                score_data["submitted_url"] = submitted_url
+            else:
+                score_data.pop("submitted_url", None)
+            job.results = score_data
+            job.status = "Completed"
+            db.commit()
+            return
+
         job.status = "Processing"
         db.commit()
-        scan_started_at = time.time()
 
         # ── 1. Static Analysis ───────────────────────────────────────────────
         # Read the artifact once and reuse the bytes across analyzers, instead of
@@ -200,67 +383,79 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         apk_info = {}
         archive_contents = []
 
-        # ── 1b. ZIP Extraction (Zip-Slip safe) ────────────────────────────────
-        is_zip = zipfile.is_zipfile(file_path)
-        if is_zip and not original_filename.lower().endswith(".apk"):
+        # ── 1b. Archive Extraction — ZIP + RAR (Zip-Slip / bomb safe) ─────────
+        # APKs are ZIPs too but are handled by apk_analyzer, so exclude them here.
+        archive, members, arc_kind = (None, None, None)
+        if not original_filename.lower().endswith(".apk"):
+            archive, members, arc_kind = _open_extractable_archive(file_path)
+        if archive is not None:
             extract_dir = None
             try:
-                extract_dir = tempfile.mkdtemp(prefix="malscan_zip_")
-                with zipfile.ZipFile(file_path, "r") as zf:
-                    members = zf.infolist()
+                extract_dir = tempfile.mkdtemp(prefix="malscan_arc_")
 
-                    # ── ZIP bomb: too many files ──────────────────────────────
-                    if len(members) > MAX_ZIP_FILE_COUNT:
-                        print(f"ZIP bomb blocked: {len(members)} files exceeds limit of {MAX_ZIP_FILE_COUNT}")
-                        members = members[:MAX_ZIP_FILE_COUNT]
+                # ── Archive bomb: too many files ──────────────────────────────
+                if len(members) > MAX_ZIP_FILE_COUNT:
+                    print(f"Archive bomb blocked: {len(members)} files exceeds limit of {MAX_ZIP_FILE_COUNT}")
+                    members = members[:MAX_ZIP_FILE_COUNT]
 
-                    total_decompressed = 0
-                    for member in members:
-                        # ── ZIP bomb: decompressed size limit ─────────────────
-                        total_decompressed += member.file_size
-                        if total_decompressed > MAX_DECOMPRESSED_BYTES:
-                            print(f"ZIP bomb blocked: decompressed size exceeds {MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB")
-                            break
+                total_decompressed = 0
+                for member in members:
+                    # ── Archive bomb: decompressed size limit ─────────────────
+                    total_decompressed += _member_size(member)
+                    if total_decompressed > MAX_DECOMPRESSED_BYTES:
+                        print(f"Archive bomb blocked: decompressed size exceeds {MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB")
+                        break
 
-                        # ── Zip Slip protection ───────────────────────────────
-                        # commonpath avoids the prefix-sibling bug of a bare
-                        # startswith (e.g. "/x/dir" vs "/x/dir_evil") and an
-                        # absolute/other-drive member path (ValueError → outside).
-                        real_extract_dir = os.path.realpath(extract_dir)
-                        member_path = os.path.realpath(os.path.join(extract_dir, member.filename))
-                        try:
-                            inside = os.path.commonpath([real_extract_dir, member_path]) == real_extract_dir
-                        except ValueError:
-                            inside = False
-                        if not inside:
-                            print(f"Zip Slip blocked: {member.filename}")
-                            continue
-                        if member.is_dir():
-                            os.makedirs(member_path, exist_ok=True)
-                            continue
-                        os.makedirs(os.path.dirname(member_path), exist_ok=True)
-                        with zf.open(member) as src, open(member_path, "wb") as dst:
+                    # ── Zip Slip protection ───────────────────────────────────
+                    # commonpath avoids the prefix-sibling bug of a bare
+                    # startswith (e.g. "/x/dir" vs "/x/dir_evil") and an
+                    # absolute/other-drive member path (ValueError → outside).
+                    member_name = _member_name(member)
+                    real_extract_dir = os.path.realpath(extract_dir)
+                    member_path = os.path.realpath(os.path.join(extract_dir, member_name))
+                    try:
+                        inside = os.path.commonpath([real_extract_dir, member_path]) == real_extract_dir
+                    except ValueError:
+                        inside = False
+                    if not inside:
+                        print(f"Zip Slip blocked: {member_name}")
+                        continue
+                    if _member_is_dir(member):
+                        os.makedirs(member_path, exist_ok=True)
+                        continue
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    try:
+                        with archive.open(member) as src, open(member_path, "wb") as dst:
                             dst.write(src.read())
+                    except Exception as me:
+                        # A backend that can't decompress one member (e.g. an
+                        # unsupported RAR compression) must not abort the scan.
+                        print(f"Archive member '{member_name}' extraction failed: {me}")
+                        continue
 
-                    for root, dirs, files in os.walk(extract_dir):
-                        for fname in files:
-                            inner_path = os.path.join(root, fname)
-                            inner_iocs = extract_iocs(inner_path)
-                            inner_pe   = analyze_pe(inner_path)
-                            for k in ("ips", "domains", "urls"):
-                                iocs[k] = list(set(iocs.get(k, []) + inner_iocs.get(k, [])))
-                            pe_info["suspicious_sections"].extend(inner_pe.get("suspicious_sections", []))
-                            if inner_pe.get("is_pe"):
-                                pe_info["is_pe"] = True
-                                pe_info["imphash"] = pe_info.get("imphash") or inner_pe.get("imphash")
-                            archive_contents.append({
-                                "name": fname,
-                                "is_pe": inner_pe.get("is_pe", False),
-                                "ioc_count": len(inner_iocs.get("urls", [])) + len(inner_iocs.get("ips", [])),
-                            })
+                for root, dirs, files in os.walk(extract_dir):
+                    for fname in files:
+                        inner_path = os.path.join(root, fname)
+                        inner_iocs = extract_iocs(inner_path)
+                        inner_pe   = analyze_pe(inner_path)
+                        for k in ("ips", "domains", "urls"):
+                            iocs[k] = list(set(iocs.get(k, []) + inner_iocs.get(k, [])))
+                        pe_info["suspicious_sections"].extend(inner_pe.get("suspicious_sections", []))
+                        if inner_pe.get("is_pe"):
+                            pe_info["is_pe"] = True
+                            pe_info["imphash"] = pe_info.get("imphash") or inner_pe.get("imphash")
+                        archive_contents.append({
+                            "name": fname,
+                            "is_pe": inner_pe.get("is_pe", False),
+                            "ioc_count": len(inner_iocs.get("urls", [])) + len(inner_iocs.get("ips", [])),
+                        })
             except Exception as ze:
-                print(f"ZIP extraction error: {ze}")
+                print(f"{(arc_kind or 'archive').upper()} extraction error: {ze}")
             finally:
+                try:
+                    archive.close()
+                except Exception:
+                    pass
                 # Always clean up temp extraction directory
                 if extract_dir and os.path.exists(extract_dir):
                     shutil.rmtree(extract_dir, ignore_errors=True)
@@ -317,10 +512,18 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         iocs["urls"] = urls
         iocs["domains"] = domains
         _strip_safe_indicators(iocs, keep=submitted_url)
+
+        # Deterministic ordering. IOC lists originate from Python set()s, whose
+        # iteration order varies with PYTHONHASHSEED across restarts — which then
+        # changes WHICH single indicator gets enriched (domains[0], public_ips[0],
+        # _pick_best_url) and the graph's [:8]/[:6] slices. Sorting here removes
+        # that restart-dependent variance so the same file enriches identically.
+        for k in ("ips", "domains", "urls"):
+            iocs[k] = sorted(iocs.get(k, []))
         urls = iocs["urls"]
         domains = iocs["domains"]
+        ips = iocs["ips"]
 
-        ips = iocs.get("ips", [])
         vt_key = os.environ.get("VT_API_KEY")
         us_key = os.environ.get("URLSCAN_API_KEY")
 
@@ -332,20 +535,17 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         if domains:
             futures["whois"] = loop.run_in_executor(_osint_executor, get_whois, domains[0])
             futures["dns"]   = loop.run_in_executor(_osint_executor, get_dns_records, domains[0])
-        import ipaddress
         import socket
-        public_ips = []
-        for ip in ips:
-            try:
-                if not ipaddress.ip_address(ip).is_private:
-                    public_ips.append(ip)
-            except ValueError:
-                pass
+        # Only globally-routable, real IPs are worth geolocating / abuse-checking.
+        # is_reportable_ip rejects private/loopback/reserved/multicast/x.x.x.0 —
+        # the same gate extraction uses — so a junk quad can't produce a bogus
+        # "threat origin" on the map.
+        public_ips = [ip for ip in ips if is_reportable_ip(ip)]
 
         if not public_ips and domains:
             try:
                 resolved_ip = socket.gethostbyname(domains[0])
-                if not ipaddress.ip_address(resolved_ip).is_private:
+                if is_reportable_ip(resolved_ip):
                     public_ips.append(resolved_ip)
                     iocs["ips"].append(resolved_ip)
             except Exception:
@@ -418,9 +618,31 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             if key in osint_results and "error" not in (osint_results[key] or {}):
                 osint_data[key] = osint_results[key]
 
+        # ── Partial-intel detection ───────────────────────────────────────────
+        # VirusTotal is the verdict-critical source: a completed VT lookup can add
+        # +100 (or halve the heuristic score), so a VT lookup that was ATTEMPTED
+        # but did NOT complete (timeout / rate-limit / still-queued) must not be
+        # scored as a clean 0. Mark the scan 'partial' (surfaced in the report and
+        # excluded from the 24h cache) so it is re-tried next time instead of
+        # freezing a possibly-wrong answer. Scoped to VT — the documented
+        # verdict-swinger — to keep caching effective for the common case.
+        def _intel_incomplete(res) -> bool:
+            if not isinstance(res, dict):
+                return False
+            if "error" in res:
+                return True
+            return (res.get("vt_status") or res.get("status")) in ("queued", "pending", "error")
+
+        intel_partial = any(
+            key in futures and _intel_incomplete(osint_results.get(key))
+            for key in ("vt_file", "vt_url")
+        )
+
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
             "file_hash": job.file_hash,
+            "submitted_url": submitted_url,
+            "intel_partial": intel_partial,
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "pe_sections":         pe_info.get("pe_sections", []),
@@ -543,6 +765,9 @@ async def submit_url(request: Request, background_tasks: BackgroundTasks, body: 
     if not (url.startswith("http://") or url.startswith("https://") or _DOMAIN_RE.match(url)):
         raise HTTPException(status_code=400, detail="Submit a full http:// or https:// URL, or a plain domain name.")
 
+    # Normalize so trivial variants (case, default port, trailing '/') map to the
+    # same vault artifact and therefore the same cached verdict.
+    url = _normalize_url(url)
     content = url.encode("utf-8")
     file_hash = hashlib.sha256(content).hexdigest()
 

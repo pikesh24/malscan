@@ -8,6 +8,8 @@ POST /upload returns, the scan job has already finished.
 
 import io
 import os
+import struct
+import zlib
 
 import pytest
 
@@ -119,3 +121,88 @@ def test_rate_limit_triggers_429(client, monkeypatch):
         assert client.post("/submit-url", json={"url": "http://rl.example/"}).status_code == 200
     res = client.post("/submit-url", json={"url": "http://rl.example/"})
     assert res.status_code == 429
+
+
+# ── Result cache: same file → same verdict ────────────────────────────────────
+
+def test_same_file_reuses_cached_result(client):
+    """Identical bytes re-uploaded within the TTL return the earlier verdict
+    verbatim (the 'same file → same result' guarantee), refreshing only metadata."""
+    content = b"cache me: http://cache-test.example/x mentions 45.33.32.156"
+    res1 = _upload(client, content, "first.txt").json()
+    result1 = client.get(f"/status/{res1['job_id']}").json()["results"]
+    assert not result1.get("cache_reuse")   # first scan runs the full pipeline
+
+    res2 = _upload(client, content, "second.txt").json()   # identical bytes, new name
+    result2 = client.get(f"/status/{res2['job_id']}").json()["results"]
+
+    assert result2.get("cache_reuse") is True
+    assert res2["job_id"] != res1["job_id"]
+    # Analytical result is identical…
+    assert result2["score"] == result1["score"]
+    assert result2["verdict"] == result1["verdict"]
+    assert result2["indicators"] == result1["indicators"]
+    # …but file metadata reflects THIS request.
+    assert result2["original_filename"] == "second.txt"
+    # The cache path skips report generation, so the report endpoint must
+    # regenerate it on demand for the reused job.
+    assert client.get(f"/report/{res2['job_id']}").status_code == 200
+
+
+def test_partial_result_is_not_cached(client, monkeypatch):
+    """A scan whose VirusTotal lookup did not complete is tagged partial and must
+    NOT be reused from cache — a timeout must never freeze as a clean verdict."""
+    monkeypatch.setenv("VT_API_KEY", "test-key")   # make the vt_file lookup run
+    monkeypatch.setattr(app_main, "get_file_report",
+                        lambda *a, **k: {"error": "VT request timed out.", "vt_status": "error"})
+
+    content = b"partial-intel probe with 45.33.32.156"
+    res1 = _upload(client, content, "p1.bin").json()
+    result1 = client.get(f"/status/{res1['job_id']}").json()["results"]
+    assert result1["partial"] is True
+    assert not result1.get("cache_reuse")
+
+    res2 = _upload(client, content, "p2.bin").json()
+    result2 = client.get(f"/status/{res2['job_id']}").json()["results"]
+    # Not served from cache — re-scanned (still partial), never frozen.
+    assert not result2.get("cache_reuse")
+    assert result2["partial"] is True
+
+
+# ── RAR archive extraction ────────────────────────────────────────────────────
+
+def _build_rar(filename: str, data: bytes) -> bytes:
+    """Assemble a genuine RAR4 'stored' archive (correct CRCs) so the extraction
+    path is exercised for real — no external `rar` tool needed to create it."""
+    def block(head_type, flags, tail, add=b""):
+        # HEAD_SIZE counts the whole header INCLUDING the 2-byte HEAD_CRC.
+        head_size = 2 + 1 + 2 + 2 + len(tail)
+        body = struct.pack("<B", head_type) + struct.pack("<H", flags) + struct.pack("<H", head_size) + tail
+        return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body + add
+
+    marker = b"Rar!\x1a\x07\x00"
+    main = block(0x73, 0x0000, struct.pack("<H", 0) + struct.pack("<I", 0))
+    name = filename.encode("ascii")
+    tail = (
+        struct.pack("<I", len(data)) + struct.pack("<I", len(data))  # PACK / UNP size
+        + struct.pack("<B", 0)                                        # HOST_OS
+        + struct.pack("<I", zlib.crc32(data) & 0xFFFFFFFF)           # FILE_CRC
+        + struct.pack("<I", 0) + struct.pack("<B", 20)               # FTIME, UNP_VER
+        + struct.pack("<B", 0x30)                                     # METHOD = stored
+        + struct.pack("<H", len(name)) + struct.pack("<I", 0x20) + name
+    )
+    fhead = block(0x74, 0x8000, tail, add=data)                       # 0x8000 = data follows
+    end = block(0x7B, 0x0000, b"")
+    return marker + main + fhead + end
+
+
+@pytest.mark.skipif(not app_main.RAR_ENABLED, reason="no RAR extraction backend (unrar/bsdtar/7z) installed")
+def test_rar_inner_files_are_extracted_and_scanned(client):
+    inner = b"rar inner payload beacons http://rar-inner.example/c2 and 45.33.32.156"
+    rar = _build_rar("payload.txt", inner)
+    res = client.post("/upload", files={"file": ("bundle.rar", io.BytesIO(rar), "application/x-rar-compressed")})
+    assert res.status_code == 200
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+    # IOCs from INSIDE the RAR surfaced in the report.
+    assert "45.33.32.156" in results["indicators"]["ips"]
+    assert any("rar-inner.example" in u for u in results["indicators"]["urls"])

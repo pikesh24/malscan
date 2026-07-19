@@ -580,20 +580,26 @@ def calculate_score(analysis_data: dict) -> dict:
     record("Known Malicious Hash Match", hash_score)
 
     # MalwareBazaar (external, authoritative hash DB)
-    s, r = _check_malwarebazaar(osint); intel_total += s; all_reasons += r
-    record("MalwareBazaar Hash Match", s)
+    mb_score, r = _check_malwarebazaar(osint); intel_total += mb_score; all_reasons += r
+    record("MalwareBazaar Hash Match", mb_score)
 
     # YARA rule matches (pattern-based, very high confidence)
-    s, r = _check_yara(osint); intel_total += s; all_reasons += r
-    record("YARA Rule Matches", s)
+    yara_score, r = _check_yara(osint); intel_total += yara_score; all_reasons += r
+    record("YARA Rule Matches", yara_score)
 
     # ── Tier 2: IOC-based threat intelligence ─────────────────────────────────
-    s, r = _check_threatfox(osint);  intel_total += s; all_reasons += r
-    record("ThreatFox IOC Match", s)
-    s, r = _check_urlhaus(osint);    intel_total += s; all_reasons += r
-    record("URLhaus Malware Distribution", s)
-    s, r = _check_abuseipdb(osint);  intel_total += s; all_reasons += r
-    record("AbuseIPDB Abuse Confidence", s)
+    # ThreatFox can match on the file HASH (authoritative, like MalwareBazaar) or
+    # on an embedded IP/domain/URL (weaker). check_iocs searches the hash first,
+    # so matched_ioc == file_hash tells us which it was — this distinction drives
+    # the corroboration cap below.
+    tf_score, r = _check_threatfox(osint);  intel_total += tf_score; all_reasons += r
+    record("ThreatFox IOC Match", tf_score)
+    _tf = osint.get("threatfox", {}) or {}
+    tf_matched_hash = bool(_tf.get("found") and file_hash and _tf.get("matched_ioc") == file_hash)
+    uh_score, r = _check_urlhaus(osint);    intel_total += uh_score; all_reasons += r
+    record("URLhaus Malware Distribution", uh_score)
+    ab_score, r = _check_abuseipdb(osint);  intel_total += ab_score; all_reasons += r
+    record("AbuseIPDB Abuse Confidence", ab_score)
 
     # ── Tier 3: Document-specific threats ─────────────────────────────────────
     s, r = _check_document_threats(analysis_data.get("document", {})); heuristic_total += s; all_reasons += r
@@ -614,21 +620,30 @@ def calculate_score(analysis_data: dict) -> dict:
     record("URL Anomalies", s)
     s, r      = _check_ioc_volume(iocs);           heuristic_total += s; all_reasons += r
     record("IOC Volume", s)
-    s, r      = _check_virustotal(osint);          intel_total += s; all_reasons += r
-    record("VirusTotal Consensus", s)
+    vt_score, r = _check_virustotal(osint);        intel_total += vt_score; all_reasons += r
+    record("VirusTotal Consensus", vt_score)
     s, r      = _check_urlscan(osint);             heuristic_total += s; all_reasons += r
     record("URLScan Verdict", s)
     s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; all_reasons += r
     record("APK Permissions", s)
 
+    # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
+    # this run — set by app/main.py. A partial scan is stored but never cached,
+    # so it gets retried instead of freezing a possibly-wrong answer.
+    intel_partial = bool(analysis_data.get("intel_partial"))
+
     # ── Benign-consensus dampening ────────────────────────────────────────────
     # If a broad VirusTotal scan (40+ engines) found NOTHING, halve the purely
     # heuristic suspicion — fixes false positives on ordinary PDFs/documents
-    # whose features (forms JS, open actions) merely look unusual.
+    # whose features (forms JS, open actions) merely look unusual. Only applies
+    # when VT actually returned a verdict (40+ engines) AND the scan is complete;
+    # a partial/absent VT result never dampens (that path is marked partial and
+    # not cached, so it can't freeze a wrongly-low score).
     vt_stats = (osint.get("virustotal") or {}).get("stats") or {}
     vt_engines = sum(vt_stats.get(k, 0) for k in ("malicious", "suspicious", "harmless", "undetected"))
     if (
-        heuristic_total > 0
+        not intel_partial
+        and heuristic_total > 0
         and intel_total == 0
         and vt_engines >= 40
         and vt_stats.get("malicious", 0) == 0
@@ -644,16 +659,60 @@ def calculate_score(analysis_data: dict) -> dict:
     final_score = min(intel_total + heuristic_total, 100)
     verdict = "Malicious" if final_score >= 70 else "Suspicious" if final_score >= 35 else "Clear"
 
+    # ── Weak-IOC corroboration cap ────────────────────────────────────────────
+    # A single ThreatFox/URLhaus/AbuseIPDB hit on an indicator EMBEDDED in an
+    # uploaded file (a domain/URL/IP the file merely references) is weaker
+    # evidence than a match on the file itself. On its own it must not push a
+    # file to "Malicious" — that produced false positives (a lone 75%-confidence
+    # ThreatFox hit on an embedded `example.com` scored 70 = Malicious).
+    #
+    # So: for FILE uploads only (a submitted URL *is* the artifact, not an
+    # embedded reference), if the Malicious verdict rests solely on such
+    # IOC-based intel with NO corroboration from a file-hash source
+    # (known-hash / MalwareBazaar / ThreatFox-on-hash / YARA) or VirusTotal,
+    # cap the verdict at Suspicious. Hash-based hits keep full weight, so true
+    # positives are untouched.
+    submitted_url = analysis_data.get("submitted_url")
+    corroborated = bool(hash_score or mb_score or yara_score or vt_score or tf_matched_hash)
+    ioc_intel_score = (0 if tf_matched_hash else tf_score) + uh_score + ab_score
+    if (
+        verdict == "Malicious"
+        and not submitted_url
+        and not corroborated
+        and ioc_intel_score > 0
+    ):
+        score_without_ioc_intel = min((intel_total - ioc_intel_score) + heuristic_total, 100)
+        if score_without_ioc_intel < 70:
+            reduction = final_score - 69
+            final_score = 69
+            verdict = "Suspicious"
+            record("Weak-IOC Corroboration Cap", -reduction)
+            all_reasons.append(
+                "Verdict capped at Suspicious: the only malware-grade evidence is a "
+                "threat-intel match on a network indicator embedded in the file, not "
+                "on the file itself, and nothing corroborates it (no file-hash match, "
+                "YARA rule, or VirusTotal detection). Treat as suspicious pending "
+                "confirmation rather than confirmed-malicious."
+            )
+
     score_breakdown.sort(key=lambda e: e["points"], reverse=True)
     risk_profile = _build_risk_profile(score_breakdown)
 
     graph_nodes, graph_edges = _build_graph(iocs, geoip, whois)
+
+    if intel_partial:
+        all_reasons.append(
+            "⚠ Threat-intelligence lookup was incomplete on this scan (a key "
+            "source such as VirusTotal did not return in time). This result is "
+            "provisional and may change — re-scan to refresh it."
+        )
 
     return {
         "score":       final_score,
         "verdict":     verdict,
         "family":      family or "Unknown",
         "attribution": attribution or "Unattributed",
+        "partial":     intel_partial,
         "reasons":     all_reasons,
         "indicators": {
             "ips":     iocs.get("ips", []),

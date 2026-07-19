@@ -41,7 +41,7 @@ def get_url_report(url: str, api_key: str) -> dict:
     key on failure.
     """
     if not api_key:
-        return {"error": "No VT API key provided"}
+        return {"error": "No VT API key provided", "vt_status": "error"}
 
     url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
     headers = {"x-apikey": api_key, "accept": "application/json"}
@@ -57,6 +57,7 @@ def get_url_report(url: str, api_key: str) -> dict:
                 "stats": attrs.get("last_analysis_stats", {}),
                 "detections": _extract_detections(attrs),
                 "reputation": attrs.get("reputation", 0),
+                "vt_status": "found",
             }
 
         elif response.status_code == 404:
@@ -69,8 +70,9 @@ def get_url_report(url: str, api_key: str) -> dict:
             )
             if submit_res.status_code == 200:
                 analysis_id = submit_res.json().get("data", {}).get("id")
-                # Poll up to 4 times (12 s total)
-                for _ in range(4):
+                # Poll up to 5 times (~15 s) — enough for a fresh URL analysis to
+                # finish reliably, still capped so it can't hold the pipeline.
+                for _ in range(5):
                     time.sleep(3)
                     poll = requests.get(
                         f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
@@ -84,20 +86,21 @@ def get_url_report(url: str, api_key: str) -> dict:
                                 "stats": attrs.get("stats", {}),
                                 "detections": _extract_detections(attrs),
                                 "reputation": 0,
+                                "vt_status": "found",
                             }
-                return {"status": "queued", "message": "VT analysis still pending."}
-            return {"error": f"VT submit failed (HTTP {submit_res.status_code})"}
+                return {"status": "queued", "message": "VT analysis still pending.", "vt_status": "queued"}
+            return {"error": f"VT submit failed (HTTP {submit_res.status_code})", "vt_status": "error"}
 
         elif response.status_code == 429:
-            return {"error": "VT rate limit exceeded. Try again later."}
+            return {"error": "VT rate limit exceeded. Try again later.", "vt_status": "error"}
         else:
-            return {"error": f"VT lookup failed (HTTP {response.status_code})"}
+            return {"error": f"VT lookup failed (HTTP {response.status_code})", "vt_status": "error"}
 
     except requests.exceptions.Timeout:
-        return {"error": "VT request timed out."}
+        return {"error": "VT request timed out.", "vt_status": "error"}
     except Exception as e:
         logger.error(f"VT error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "vt_status": "error"}
 
 
 def upload_file(file_path: str, api_key: str) -> dict:
@@ -139,11 +142,11 @@ def upload_file(file_path: str, api_key: str) -> dict:
             )
 
         if upload_resp.status_code != 200:
-            return {"error": f"VT file upload failed (HTTP {upload_resp.status_code})"}
+            return {"error": f"VT file upload failed (HTTP {upload_resp.status_code})", "vt_status": "error"}
 
         analysis_id = upload_resp.json().get("data", {}).get("id")
         if not analysis_id:
-            return {"error": "VT upload succeeded but no analysis ID returned."}
+            return {"error": "VT upload succeeded but no analysis ID returned.", "vt_status": "error"}
 
         logger.info(f"File uploaded to VT, analysis ID: {analysis_id}")
 
@@ -164,28 +167,41 @@ def upload_file(file_path: str, api_key: str) -> dict:
                         "detections": _extract_detections(attrs),
                         "reputation": 0,
                         "uploaded": True,
+                        "vt_status": "found",
                     }
 
-        return {"status": "queued", "message": "VT file analysis still pending after upload.", "uploaded": True}
+        # Still analysing after the budget — NOT a clean verdict, just incomplete.
+        # 'vt_status: queued' tells the pipeline to mark the scan partial (and
+        # therefore not cache it) so a re-scan re-tries instead of freezing a 0.
+        return {"status": "queued", "message": "VT file analysis still pending after upload.", "uploaded": True, "vt_status": "queued"}
 
     except requests.exceptions.Timeout:
-        return {"error": "VT file upload timed out."}
+        return {"error": "VT file upload timed out.", "vt_status": "error"}
     except Exception as e:
         logger.error(f"VT upload error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "vt_status": "error"}
 
 
 def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict:
     """
-    Queries VirusTotal for a file report by SHA-256 hash.
-    If the hash is unknown and file_path is provided, automatically
-    uploads the file for cloud scanning.
-    Returns dict with 'stats' and 'reputation', or 'error' on failure.
+    Queries VirusTotal for a file report by SHA-256 hash FIRST — an instant,
+    authoritative answer for any file VT already knows (which is most real
+    malware). Only when the hash is genuinely unknown (404) does it fall back to
+    upload + poll.
+
+    Every return carries a 'vt_status' discriminator so the pipeline can tell
+    apart the three cases that must NOT be conflated:
+      - 'found'     → a real verdict is present ('stats' populated); usable.
+      - 'not_found' → VT definitively has no data on this file (benign-unknown);
+                      not an error, but no verdict either.
+      - 'queued' / 'error' → the lookup did not complete (still analysing, rate
+                      limited, timed out). A timeout must never be scored as a
+                      clean 0 — the pipeline marks these scans 'partial'.
     """
     if not api_key:
-        return {"error": "No VT API key provided"}
+        return {"error": "No VT API key provided", "vt_status": "error"}
     if not file_hash:
-        return {"error": "No file hash provided"}
+        return {"error": "No file hash provided", "vt_status": "error"}
 
     headers = {"x-apikey": api_key, "accept": "application/json"}
 
@@ -202,20 +218,21 @@ def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict
                 "type_description": attrs.get("type_description"),
                 "meaningful_name": attrs.get("meaningful_name"),
                 "popular_threat_classification": attrs.get("popular_threat_classification"),
+                "vt_status": "found",
             }
         elif response.status_code == 404:
             # Hash not found — upload the file if we have it
             if file_path and os.path.exists(file_path):
                 logger.info(f"Hash {file_hash[:16]}... unknown, uploading file to VT.")
                 return upload_file(file_path, api_key)
-            return {"status": "unknown", "message": "File not found in VirusTotal database."}
+            return {"status": "unknown", "message": "File not found in VirusTotal database.", "vt_status": "not_found"}
         elif response.status_code == 429:
-            return {"error": "VT rate limit exceeded. Try again later."}
+            return {"error": "VT rate limit exceeded. Try again later.", "vt_status": "error"}
         else:
-            return {"error": f"VT file lookup failed (HTTP {response.status_code})"}
+            return {"error": f"VT file lookup failed (HTTP {response.status_code})", "vt_status": "error"}
 
     except requests.exceptions.Timeout:
-        return {"error": "VT request timed out."}
+        return {"error": "VT request timed out.", "vt_status": "error"}
     except Exception as e:
         logger.error(f"VT file error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "vt_status": "error"}

@@ -119,6 +119,75 @@ def test_output_contract_keys():
     """Both frontends consume this exact shape — guard it."""
     result = calculate_score({"iocs": {"ips": ["1.2.3.4"], "domains": ["x.com"], "urls": []}})
     for key in ("score", "verdict", "family", "attribution", "reasons",
-                "indicators", "osint_summary", "graph_nodes", "graph_edges"):
+                "indicators", "osint_summary", "graph_nodes", "graph_edges", "partial"):
         assert key in result
     assert result["indicators"]["ips"] == ["1.2.3.4"]
+
+
+# ── Weak-IOC corroboration cap ────────────────────────────────────────────────
+
+def test_lone_embedded_ioc_intel_capped_at_suspicious():
+    """Regression (the example.com 'Appleseed' case): a single 75%-confidence
+    ThreatFox hit on a domain EMBEDDED in an uploaded file must not alone reach
+    Malicious — cap it at Suspicious."""
+    result = calculate_score({
+        "file_hash": "deadbeef",
+        "iocs": {"domains": ["appleseed.example"]},
+        "osint": {"threatfox": {"found": True, "confidence": 75,
+                                "malware_printable": "Appleseed",
+                                "matched_ioc": "appleseed.example"}},
+    })
+    assert result["verdict"] == "Suspicious"
+    assert result["score"] < 70
+    assert any("capped at Suspicious" in r for r in result["reasons"])
+
+
+def test_embedded_ioc_intel_with_hash_corroboration_stays_malicious():
+    """Same weak hit, but a MalwareBazaar hash match corroborates it → Malicious."""
+    result = calculate_score({
+        "file_hash": "deadbeef",
+        "osint": {
+            "threatfox": {"found": True, "confidence": 75, "malware_printable": "X",
+                          "matched_ioc": "appleseed.example"},
+            "malwarebazaar": {"found": True, "threat_name": "Real", "first_seen": "2026"},
+        },
+    })
+    assert result["verdict"] == "Malicious"
+    assert result["score"] >= 70
+
+
+def test_threatfox_hash_match_is_full_weight():
+    """A ThreatFox match on the FILE HASH (not an embedded IOC) is authoritative
+    hash-based evidence — never capped."""
+    result = calculate_score({
+        "file_hash": "deadbeef",
+        "osint": {"threatfox": {"found": True, "confidence": 75, "malware_printable": "X",
+                                "matched_ioc": "deadbeef"}},
+    })
+    assert result["verdict"] == "Malicious"
+
+
+def test_url_submission_ioc_intel_not_capped():
+    """For a submitted URL the URL IS the artifact, so a URLhaus/ThreatFox hit on
+    it is primary evidence — the embedded-IOC cap must not fire."""
+    result = calculate_score({
+        "submitted_url": "http://evil.example/x",
+        "iocs": {"urls": ["http://evil.example/x"]},
+        "osint": {
+            "threatfox": {"found": True, "confidence": 100, "malware_printable": "Y",
+                          "matched_ioc": "http://evil.example/x"},
+            "urlhaus": {"found": True, "threat": "malware_download",
+                        "matched_url": "http://evil.example/x"},
+        },
+    })
+    assert result["verdict"] == "Malicious"
+    assert result["score"] >= 70
+    assert not any("capped at Suspicious" in r for r in result["reasons"])
+
+
+def test_partial_intel_flag_surfaced():
+    """A scan whose VT lookup didn't complete is tagged partial and says so."""
+    assert calculate_score({"osint": {}})["partial"] is False
+    partial = calculate_score({"intel_partial": True, "osint": {}})
+    assert partial["partial"] is True
+    assert any("incomplete" in r.lower() for r in partial["reasons"])
