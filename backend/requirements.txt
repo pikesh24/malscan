@@ -1,6 +1,10 @@
 fastapi==0.111.0
 uvicorn==0.30.1
 sqlalchemy==2.0.31
+# Postgres driver for cloud deploys (MALSCAN_DB_URL=postgresql://...);
+# harmless locally where the SQLite default is used instead.
+# 2.9.10+ required — earlier versions ship no Python 3.13 wheels.
+psycopg2-binary==2.9.10
 python-multipart==0.0.18
 python-dotenv==1.1.0
 requests==2.32.3

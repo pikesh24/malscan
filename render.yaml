@@ -1,0 +1,37 @@
+# Render Blueprint — provisions the MALSCAN backend + Postgres in one shot.
+# Dashboard: New + → Blueprint → pick this repo. Docs: https://render.com/docs/blueprint-spec
+#
+# Notes:
+# - rootDir is backend/ so uvicorn runs with cwd=backend/ (the app's relative
+#   paths — .env loading, app/vault, sys.path for analysis_engine/ — assume it).
+# - The build installs ALL THREE requirements files: jinja2 / python-whois /
+#   dnspython / defusedxml are runtime deps listed only in the sub-folders.
+# - Playwright's Chromium is deliberately NOT installed (PDF export returns 501
+#   in the cloud — everything else works). Keeps the build light for free tier.
+# - API keys (VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY)
+#   are optional and set manually in the dashboard — never committed.
+
+services:
+  - type: web
+    name: malscan-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt -r analysis_engine/requirements.txt -r attribution_module/requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MALSCAN_DB_URL
+        fromDatabase:
+          name: malscan-db
+          property: connectionString
+      # APK WebView origin (Capacitor serves from https://localhost). Add your
+      # hosted-web domain here only if the site ever calls the API cross-origin
+      # (with the Next.js /api rewrite proxy it does not need CORS).
+      - key: MALSCAN_ALLOWED_ORIGINS
+        value: https://localhost
+      # Set the enrichment API keys in the Render dashboard (Environment tab):
+      #   VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY
+
+databases:
+  - name: malscan-db
+    plan: free

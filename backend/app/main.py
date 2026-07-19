@@ -642,7 +642,12 @@ async def get_report_pdf(job_id: str):
         raise HTTPException(status_code=501, detail="PDF export requires the 'playwright' package (pip install playwright && playwright install chromium)")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        try:
+            browser = await p.chromium.launch()
+        except Exception:
+            # Chromium itself isn't installed (e.g. cloud deploys skip the heavy
+            # `playwright install chromium` step) — same remedy as a missing package.
+            raise HTTPException(status_code=501, detail="PDF export unavailable in this deployment (headless Chromium not installed — run: playwright install chromium)")
         try:
             page = await browser.new_page()
             await page.set_content(html, wait_until="networkidle")

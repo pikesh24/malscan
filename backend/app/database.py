@@ -6,6 +6,10 @@ from .models import Base
 
 # Overridable for tests and production deploys (e.g. postgres in the cloud).
 DATABASE_URL = os.environ.get("MALSCAN_DB_URL", "sqlite:///./malscan.db")
+# Render (and Heroku-style hosts) hand out "postgres://" URLs, a scheme
+# SQLAlchemy 2.0 no longer accepts — rewrite it to "postgresql://".
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
