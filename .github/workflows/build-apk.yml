@@ -1,0 +1,86 @@
+name: Build APK & OTA update
+
+on:
+  push:
+    branches: [main, pika]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env.capacitor
+        run: |
+          cat <<EOF > .env.capacitor
+          BUILD_TARGET=capacitor
+          NEXT_PUBLIC_API_BASE_URL=${{ secrets.NEXT_PUBLIC_API_BASE_URL }}
+          NEXT_PUBLIC_VERSION_MANIFEST_URL=${{ vars.VERSION_MANIFEST_URL }}
+          EOF
+
+      - name: Build web assets + sync Android
+        run: npm run cap:sync
+
+      - name: Zip OTA bundle
+        run: cd out && zip -r ../update.zip . && cd ..
+
+      - name: Build debug APK
+        working-directory: frontend/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug \
+            -PappVersionCode=${{ github.run_number }} \
+            -PappVersionName=1.0.${{ github.run_number }}
+
+      - name: Create GitHub release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: v${{ github.run_number }}
+          files: |
+            frontend/update.zip
+            frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+
+      - name: Update version manifest Gist
+        run: |
+          REPO_URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.run_number }}"
+          PAYLOAD=$(cat <<EOF
+          {
+            "files": {
+              "version.json": {
+                "content": "{\"versionCode\": ${{ github.run_number }}, \"versionName\": \"1.0.${{ github.run_number }}\", \"otaUrl\": \"${REPO_URL}/update.zip\", \"apkUrl\": \"${REPO_URL}/app-debug.apk\"}"
+              }
+            }
+          }
+          EOF
+          )
+          curl -sSf -X PATCH \
+            -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/gists/${{ secrets.GIST_ID }}" \
+            -d "$PAYLOAD"

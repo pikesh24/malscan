@@ -11,6 +11,12 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: true,
   },
+  plugins: {
+    CapacitorUpdater: {
+      appReadyTimeout: 10000,
+      autoSplashscreenTimeout: 3000,
+    },
+  },
 };
 
 export default config;
