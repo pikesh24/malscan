@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { motion, useScroll, useTransform } from "framer-motion"
-import { UploadCloud, ArrowRight } from "lucide-react"
+import { UploadCloud, ArrowRight, ScanLine } from "lucide-react"
 import { Capacitor } from "@capacitor/core"
 import { submitFileForScan, submitUrlForScan } from "../lib/scan"
 
@@ -71,9 +71,11 @@ export default function LandingPage() {
       
       {/* HEADER */}
       <nav className="fixed top-0 w-full p-8 flex justify-between z-50 mix-blend-difference text-white/80 uppercase tracking-widest text-xs font-mono">
-        <div className="flex items-center gap-3">
-            <div className="w-3 h-3 bg-[#FF3B00]"></div>
-            <span className="font-bold">MalScan</span>
+        <div className="flex items-center gap-4 group cursor-default">
+            <div className="relative flex items-center justify-center w-8 h-8 bg-[#FF3B00] text-[#121212] rounded-[4px] overflow-hidden">
+               <ScanLine size={18} className="absolute group-hover:scale-110 transition-transform duration-300" />
+            </div>
+            <span className="font-bold text-base tracking-[0.25em]">MALSCAN</span>
         </div>
         <div className="flex gap-6 items-center">
             {isNative && (
@@ -84,15 +86,21 @@ export default function LandingPage() {
       
       {/* HERO SECTION (UPDATED TEXT) */}
       <main className="min-h-screen flex flex-col justify-center items-center relative z-10 px-6 pt-20">
-        <motion.div style={{ y: yText }} className="text-center mb-16 relative">
-          <div className="inline-block px-3 py-1 mb-6 border border-[#FF3B00] text-[#FF3B00] text-[10px] font-bold tracking-[0.3em] uppercase rounded-full">
+        <motion.div style={{ y: yText }} className="text-center mb-16 relative w-full flex flex-col items-center">
+          <div className="inline-block px-4 py-1.5 mb-6 bg-[#FF3B00]/5 border border-[#FF3B00]/30 text-[#FF3B00] text-[10px] font-bold tracking-[0.3em] uppercase rounded-full backdrop-blur-sm">
             Automated Forensic Intelligence
           </div>
-          <h1 className="text-7xl md:text-[10rem] font-medium tracking-tighter leading-[0.85] text-[#121212] mb-8">
-            THREAT.<br/>
-            <span className="text-transparent bg-clip-text bg-gradient-to-b from-[#121212] to-gray-400">VISUALIZED.</span>
+          <h1 className="text-7xl md:text-[11vw] font-black tracking-tighter leading-[0.8] text-[#121212] mb-6">
+            MALSCAN<span className="text-[#FF3B00]">.</span>
           </h1>
-          <p className="max-w-xl mx-auto text-gray-500 font-mono text-xs leading-relaxed uppercase tracking-wider">
+          <div className="flex items-center justify-center gap-4 mb-8 w-full max-w-2xl">
+             <div className="h-px flex-1 bg-gradient-to-r from-transparent to-gray-300"></div>
+             <span className="text-gray-500 font-bold tracking-[0.4em] text-xs md:text-sm uppercase whitespace-nowrap">
+               Threat. Visualized.
+             </span>
+             <div className="h-px flex-1 bg-gradient-to-l from-transparent to-gray-300"></div>
+          </div>
+          <p className="max-w-xl mx-auto text-gray-500 font-mono text-[10px] leading-relaxed uppercase tracking-widest">
             Enterprise-grade static analysis, heuristic clustering, and infrastructure mapping for modern threat landscapes. Isolated execution environment.
           </p>
         </motion.div>
