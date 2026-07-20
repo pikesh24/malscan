@@ -55,6 +55,13 @@ jobs:
             -PappVersionCode=${{ github.run_number }} \
             -PappVersionName=1.0.${{ github.run_number }}
 
+      - name: Upload APK as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.run_number }}
+          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
       - name: Create GitHub release
         id: release
         uses: softprops/action-gh-release@v2
