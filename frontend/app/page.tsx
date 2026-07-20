@@ -82,7 +82,7 @@ export default function LandingPage() {
       <main className="min-h-screen flex flex-col justify-center items-center relative z-10 px-6 pt-20">
         <motion.div style={{ y: yText }} className="text-center mb-16 relative w-full flex flex-col items-center">
           <div className="inline-block px-4 py-1.5 mb-6 bg-[#FF3B00]/5 border border-[#FF3B00]/30 text-[#FF3B00] text-[10px] font-bold tracking-[0.3em] uppercase rounded-full backdrop-blur-sm">
-            Automated Forensic Intelligence
+            Forensic Intelligence
           </div>
           <h1 className="text-7xl md:text-[11vw] font-black tracking-tighter leading-[0.8] text-[#121212] mb-6">
             MALSCAN<span className="text-[#FF3B00]">.</span>
