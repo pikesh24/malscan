@@ -33,7 +33,7 @@ jobs:
             NATIVE_CHANGED=true
           fi
 
-          CURRENT_VERSION_CODE=$(curl -sS "${{ vars.VERSION_MANIFEST_URL }}?t=$(date +%s)" | jq -r '.versionCode // 0' 2>/dev/null || echo 0)
+          CURRENT_VERSION_CODE=$(curl -sS "${{ vars.VERSION_MANIFEST_URL }}?t=$(date +%s)" | jq -r '.files["version.json"].content | fromjson | .versionCode // 0' 2>/dev/null || echo 0)
 
           if [ "$NATIVE_CHANGED" = "true" ] || [ "$CURRENT_VERSION_CODE" = "0" ] || [ "$CURRENT_VERSION_CODE" = "null" ]; then
             VERSION_CODE=${{ github.run_number }}

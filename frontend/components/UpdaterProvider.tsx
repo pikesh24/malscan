@@ -7,7 +7,9 @@ import { Browser } from "@capacitor/browser"
 import { CapacitorUpdater } from "@capgo/capacitor-updater"
 import { AlertTriangle, Download, X } from "lucide-react"
 
-// Raw Gist URL, e.g. https://gist.githubusercontent.com/<user>/<gistId>/raw/version.json
+// GitHub API Gist URL, e.g. https://api.github.com/gists/<gistId>
+// (NOT the gist.githubusercontent.com "raw" URL — that sits behind a CDN that
+// can lag several minutes behind the actual content after an update.)
 const VERSION_MANIFEST_URL = process.env.NEXT_PUBLIC_VERSION_MANIFEST_URL || ""
 
 interface VersionManifest {
@@ -51,11 +53,12 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
       if (!VERSION_MANIFEST_URL) return
 
       try {
-        const [{ build: currentVersionCode }, { bundle: currentBundle }, manifest] = await Promise.all([
+        const [{ build: currentVersionCode }, { bundle: currentBundle }, gistResponse] = await Promise.all([
           App.getInfo(),
           CapacitorUpdater.current(),
-          fetch(`${VERSION_MANIFEST_URL}?t=${Date.now()}`).then((r) => r.json() as Promise<VersionManifest>),
+          fetch(`${VERSION_MANIFEST_URL}?t=${Date.now()}`).then((r) => r.json()),
         ])
+        const manifest: VersionManifest = JSON.parse(gistResponse.files["version.json"].content)
 
         if (Number(manifest.versionCode) > Number(currentVersionCode)) {
           setNativeUpdate({ versionName: manifest.versionName, apkUrl: manifest.apkUrl })
