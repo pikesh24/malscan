@@ -32,7 +32,6 @@ frontend/out/
 frontend/build/
 frontend/next-env.d.ts
 frontend/*.tsbuildinfo
-frontend/package-lock.json
 
 # ── Root-level test/scratch files ──────────────────────────────────────────────
 test_archive.zip
