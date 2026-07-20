@@ -102,37 +102,32 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      {otaState?.phase === "available" && (
-        <div className="fixed bottom-0 inset-x-0 z-[110] px-4 pb-4">
-          <div className="flex items-center justify-between gap-3 bg-white border-2 border-[#121212] px-4 py-3 shadow-lg">
-            <div className="min-w-0">
-              <p className="text-sm font-medium tracking-tight truncate">Update available</p>
-              <p className="font-mono text-[10px] text-gray-500 truncate">Version {otaState.versionName}</p>
-            </div>
-            <button
-              onClick={applyOtaUpdate}
-              className="shrink-0 flex items-center gap-2 py-2 px-4 bg-[#121212] text-white font-mono text-[10px] tracking-widest uppercase hover:bg-[#FF3B00] transition-colors"
-            >
-              <Download size={14} />
-              Update
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(otaState?.phase === "downloading" || otaState?.phase === "installing") && (
+      {otaState && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 px-6">
           <div className="relative w-full max-w-sm bg-white border-2 border-[#121212] p-6">
+            <Download className="w-10 h-10 text-[#FF3B00] mb-4" />
             <h2 className="text-lg font-medium tracking-tight mb-2">
-              {otaState.phase === "downloading" ? "Downloading update" : "Installing update"}
+              {otaState.phase === "available" && "Update Required"}
+              {otaState.phase === "downloading" && "Downloading update"}
+              {otaState.phase === "installing" && "Installing update"}
             </h2>
-            <p className="font-mono text-xs text-gray-500 leading-relaxed mb-4">Version {otaState.versionName}</p>
-            <div className="h-2 w-full bg-gray-200">
-              <div
-                className="h-full bg-[#121212] transition-all"
-                style={{ width: `${otaState.phase === "downloading" ? otaState.percent : 100}%` }}
-              />
-            </div>
+            <p className="font-mono text-xs text-gray-500 leading-relaxed mb-6">Version {otaState.versionName}</p>
+
+            {otaState.phase === "available" ? (
+              <button
+                onClick={applyOtaUpdate}
+                className="w-full py-3 bg-[#121212] text-white font-mono text-[10px] tracking-widest uppercase hover:bg-[#FF3B00] transition-colors"
+              >
+                Update Now
+              </button>
+            ) : (
+              <div className="h-2 w-full bg-gray-200">
+                <div
+                  className="h-full bg-[#121212] transition-all"
+                  style={{ width: `${otaState.phase === "downloading" ? otaState.percent : 100}%` }}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
