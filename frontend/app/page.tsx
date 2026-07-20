@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { motion, useScroll, useTransform } from "framer-motion"
-import { UploadCloud, ArrowRight, ScanLine } from "lucide-react"
+import { UploadCloud, ArrowRight } from "lucide-react"
 import { Capacitor } from "@capacitor/core"
 import { submitFileForScan, submitUrlForScan } from "../lib/scan"
 
@@ -70,13 +70,7 @@ export default function LandingPage() {
       <BackgroundMedia />
       
       {/* HEADER */}
-      <nav className="fixed top-0 w-full p-8 flex justify-between z-50 mix-blend-difference text-white/80 uppercase tracking-widest text-xs font-mono">
-        <div className="flex items-center gap-4 group cursor-default">
-            <div className="relative flex items-center justify-center w-8 h-8 bg-[#FF3B00] text-[#121212] rounded-[4px] overflow-hidden">
-               <ScanLine size={18} className="absolute group-hover:scale-110 transition-transform duration-300" />
-            </div>
-            <span className="font-bold text-base tracking-[0.25em]">MALSCAN</span>
-        </div>
+      <nav className="fixed top-0 w-full p-8 flex justify-end z-50 mix-blend-difference text-white/80 uppercase tracking-widest text-xs font-mono">
         <div className="flex gap-6 items-center">
             {isNative && (
               <button onClick={() => router.push('/settings')} className="hover:text-[#FF3B00] transition-colors">SETTINGS</button>
