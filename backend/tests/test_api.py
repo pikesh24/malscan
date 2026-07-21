@@ -123,35 +123,54 @@ def test_rate_limit_triggers_429(client, monkeypatch):
     assert res.status_code == 429
 
 
-# ── Result cache: same file → same verdict ────────────────────────────────────
+# ── Duplicate-submission debounce (NOT a result cache) ────────────────────────
 
-def test_same_file_reuses_cached_result(client):
-    """Identical bytes re-uploaded within the TTL return the earlier verdict
-    verbatim (the 'same file → same result' guarantee), refreshing only metadata."""
-    content = b"cache me: http://cache-test.example/x mentions 45.33.32.156"
+def test_duplicate_submission_within_window_is_debounced(client):
+    """The same bytes resubmitted within the debounce window (double-click, app
+    retry) reuse the just-computed result instead of burning a second scan's
+    worth of external API quota. Metadata still reflects THIS request."""
+    content = b"debounce me: http://debounce-test.example/x mentions 45.33.32.156"
     res1 = _upload(client, content, "first.txt").json()
     result1 = client.get(f"/status/{res1['job_id']}").json()["results"]
-    assert not result1.get("cache_reuse")   # first scan runs the full pipeline
+    assert not result1.get("debounced")   # first scan runs the full pipeline
 
     res2 = _upload(client, content, "second.txt").json()   # identical bytes, new name
     result2 = client.get(f"/status/{res2['job_id']}").json()["results"]
 
-    assert result2.get("cache_reuse") is True
+    assert result2.get("debounced") is True
     assert res2["job_id"] != res1["job_id"]
-    # Analytical result is identical…
     assert result2["score"] == result1["score"]
     assert result2["verdict"] == result1["verdict"]
-    assert result2["indicators"] == result1["indicators"]
     # …but file metadata reflects THIS request.
     assert result2["original_filename"] == "second.txt"
-    # The cache path skips report generation, so the report endpoint must
+    # The debounce path skips report generation, so the report endpoint must
     # regenerate it on demand for the reused job.
     assert client.get(f"/report/{res2['job_id']}").status_code == 200
 
 
-def test_partial_result_is_not_cached(client, monkeypatch):
+def test_rescan_past_window_runs_a_fresh_scan(client, monkeypatch):
+    """Past the debounce window a resubmit is a REAL rescan, not a replay.
+
+    This is the guarantee that replaced the old 24h result cache: a wrong verdict
+    (or one made stale by threat intel moving) can never be frozen — the next
+    scan recomputes it from scratch."""
+    monkeypatch.setattr(app_main, "RESULT_DEBOUNCE_SECONDS", 0)
+
+    content = b"rescan me: http://rescan-test.example/y mentions 45.33.32.156"
+    res1 = _upload(client, content, "a.txt").json()
+    client.get(f"/status/{res1['job_id']}")
+
+    res2 = _upload(client, content, "b.txt").json()
+    result2 = client.get(f"/status/{res2['job_id']}").json()["results"]
+
+    assert not result2.get("debounced")   # full pipeline ran again
+    assert result2["verdict"] in ("Clear", "Suspicious", "Malicious", "Inconclusive")
+
+
+def test_partial_result_is_never_reused(client, monkeypatch):
     """A scan whose VirusTotal lookup did not complete is tagged partial and must
-    NOT be reused from cache — a timeout must never freeze as a clean verdict."""
+    never be handed back to a later submission — even inside the debounce window.
+    A degraded scan must not stand in for a finished one."""
     monkeypatch.setenv("VT_API_KEY", "test-key")   # make the vt_file lookup run
     monkeypatch.setattr(app_main, "get_file_report",
                         lambda *a, **k: {"error": "VT request timed out.", "vt_status": "error"})
@@ -160,13 +179,70 @@ def test_partial_result_is_not_cached(client, monkeypatch):
     res1 = _upload(client, content, "p1.bin").json()
     result1 = client.get(f"/status/{res1['job_id']}").json()["results"]
     assert result1["partial"] is True
-    assert not result1.get("cache_reuse")
+    assert not result1.get("debounced")
 
     res2 = _upload(client, content, "p2.bin").json()
     result2 = client.get(f"/status/{res2['job_id']}").json()["results"]
-    # Not served from cache — re-scanned (still partial), never frozen.
-    assert not result2.get("cache_reuse")
+    assert not result2.get("debounced")
     assert result2["partial"] is True
+
+
+def test_partial_scan_with_no_findings_is_inconclusive_not_clear(client, monkeypatch):
+    """The core safety property: when VirusTotal (the verdict-critical source)
+    does not complete and nothing else was found, 'no findings' must NOT be
+    reported as Clear — we cannot tell 'nothing is wrong' from 'we couldn't
+    check'. Otherwise a rate-limited scan of real malware looks safe."""
+    monkeypatch.setenv("VT_API_KEY", "test-key")
+    monkeypatch.setattr(app_main, "get_file_report",
+                        lambda *a, **k: {"error": "VT rate limit exceeded.", "vt_status": "error"})
+
+    res = _upload(client, b"a wholly unremarkable file with no indicators", "benign.txt").json()
+    results = client.get(f"/status/{res['job_id']}").json()["results"]
+
+    assert results["partial"] is True
+    assert results["verdict"] == "Inconclusive"
+    assert results["verdict"] != "Clear"
+
+
+def test_partial_scan_does_not_downgrade_a_real_detection(client, monkeypatch):
+    """Inconclusive is deliberately narrow: it only replaces a would-be 'Clear'.
+    A genuine detection must keep its verdict even when intel was incomplete —
+    relabelling a true positive as 'Inconclusive' would bury it."""
+    monkeypatch.setenv("VT_API_KEY", "test-key")
+    monkeypatch.setattr(app_main, "get_file_report",
+                        lambda *a, **k: {"error": "VT rate limit exceeded.", "vt_status": "error"})
+    # EICAR is scanned by an earlier test in this session; without this the
+    # upload would be debounced to that earlier (non-partial) result.
+    monkeypatch.setattr(app_main, "RESULT_DEBOUNCE_SECONDS", 0)
+
+    res = _upload(client, EICAR, "eicar.com").json()
+    results = client.get(f"/status/{res['job_id']}").json()["results"]
+
+    assert results["partial"] is True
+    assert results["verdict"] in ("Malicious", "Suspicious")
+
+
+def test_rescan_does_not_cluster_with_itself(client, monkeypatch):
+    """Without a long-lived cache every rescan creates a new job carrying the same
+    indicators. Clustering must exclude the artifact's OWN prior scans (keyed on
+    file_hash) or a file appears to share infrastructure with copies of itself and
+    reads as a campaign."""
+    monkeypatch.setattr(app_main, "RESULT_DEBOUNCE_SECONDS", 0)
+
+    # Indicators unique to this test — any cluster match can then ONLY be a
+    # self-match. (Shared IPs like 45.33.32.156 legitimately cluster across the
+    # other tests' distinct artifacts, which is the behaviour we want to keep.)
+    content = b"self-cluster probe mentions 203.0.113.77 and http://selfclust-unique.example/z"
+    first = _upload(client, content, "one.txt").json()
+    client.get(f"/status/{first['job_id']}")
+
+    second = _upload(client, content, "two.txt").json()
+    results = client.get(f"/status/{second['job_id']}").json()["results"]
+
+    clusters = results.get("clusters") or {}
+    assert clusters.get("cluster_count", 0) == 0
+    for key in ("shared_ips", "shared_domains", "shared_asns", "shared_registrars"):
+        assert not (clusters.get(key) or {}), f"{key} matched the artifact's own prior scan"
 
 
 # ── RAR archive extraction ────────────────────────────────────────────────────

@@ -191,3 +191,11 @@ def test_partial_intel_flag_surfaced():
     partial = calculate_score({"intel_partial": True, "osint": {}})
     assert partial["partial"] is True
     assert any("incomplete" in r.lower() for r in partial["reasons"])
+
+
+def test_partial_intel_downgrades_clear_to_inconclusive():
+    """With nothing found AND the verdict-critical source missing, we cannot tell
+    'nothing is wrong' from 'we could not check' — so it must not read as Clear."""
+    assert calculate_score({"osint": {}})["verdict"] == "Clear"
+    partial = calculate_score({"intel_partial": True, "osint": {}})
+    assert partial["verdict"] == "Inconclusive"

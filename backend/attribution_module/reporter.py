@@ -90,6 +90,13 @@ def _technical_summary(score_data: dict, raw_data: dict) -> str:
 
 
 def _recommendations(verdict: str, is_url: bool) -> list:
+    if verdict == "Inconclusive":
+        return [
+            "This scan could not be completed — VirusTotal did not respond, so this is NOT a clean result.",
+            "Re-scan before making any trust decision; the earlier lookup usually succeeds on a retry.",
+            "Until then, treat the artifact as unverified: do not run or visit it outside a disposable sandbox.",
+            "If repeated scans stay inconclusive, check the backend's VirusTotal API key and rate-limit status.",
+        ]
     if verdict == "Malicious":
         return [
             "Do not open, run, or interact with this artifact on a device or account you care about.",
@@ -236,6 +243,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   .vclear   { color: var(--green); }
   .vsus     { color: var(--amber); }
   .vmal     { color: var(--accent); }
+  /* Inconclusive = "we could not check", deliberately slate/neutral so it reads
+     as neither safe (green) nor confirmed-bad (red). */
+  .vinc     { color: #64748b; }
 
   /* ---- callout / recommendations ---- */
   .callout { margin-top: 8px; background: #f7ecd9; border: 1px solid #e6cfa5; border-left: 5px solid #b26a12; border-radius: 4px; padding: 18px 20px; }
@@ -647,11 +657,17 @@ def generate_report(job_id: str, score_data: dict, raw_data: dict) -> str:
         or "Unknown Target"
     )
 
-    verdict_class = {"Clear": "vclear", "Suspicious": "vsus", "Malicious": "vmal"}.get(verdict, "vclear")
+    # Unknown verdicts fall back to "vinc" (neutral), never "vclear" — an
+    # unrecognised state must not be painted as a clean bill of health.
+    verdict_class = {
+        "Clear": "vclear", "Suspicious": "vsus",
+        "Malicious": "vmal", "Inconclusive": "vinc",
+    }.get(verdict, "vinc")
     verdict_sentence = {
         "Clear": "No indicators of compromise were identified. This artifact appears safe based on the checks performed.",
         "Suspicious": "This artifact shows some warning signs. It isn't confirmed malicious — but treat it with caution.",
         "Malicious": "This artifact matches known-bad patterns with high confidence. Do not open, run, or trust it.",
+        "Inconclusive": "This scan did not complete — VirusTotal, the verdict-critical source, was unavailable. No indicators were found, but that is not the same as safe. Re-scan before trusting this artifact.",
     }.get(verdict, "")
 
     vt_stats = osint.get("virustotal") if osint else None

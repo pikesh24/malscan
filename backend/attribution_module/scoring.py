@@ -23,7 +23,11 @@ Input shape (from main.py):
 Output shape (stored in ScanJob.results JSON column):
 {
     "score":         int (0-100),
-    "verdict":       "Malicious" | "Suspicious" | "Clear",
+    "verdict":       "Malicious" | "Suspicious" | "Clear" | "Inconclusive",
+                     # "Inconclusive" = nothing found BUT a verdict-critical intel
+                     # source (VirusTotal) did not complete, so absence of findings
+                     # cannot be reported as clean. Always paired with partial=True.
+                     # Malicious/Suspicious are never downgraded to it.
     "reasons":       [str],
     "indicators":    {"ips": [...], "domains": [...], "urls": [...]},
     "osint_summary": {"registrar", "asn", "country", "hosting", "domain_age_days", "virustotal_detections"},
@@ -700,12 +704,30 @@ def calculate_score(analysis_data: dict) -> dict:
 
     graph_nodes, graph_edges = _build_graph(iocs, geoip, whois)
 
+    # ── Degraded-scan honesty: Clear → Inconclusive ───────────────────────────
+    # When a verdict-critical source (VirusTotal) did not complete, "Clear" is
+    # not a finding — it is the ABSENCE of one, and we cannot tell "nothing is
+    # wrong" apart from "we were unable to check". Reporting that as clean is
+    # how a rate-limited scan of real malware ends up looking safe, so say so.
+    #
+    # Deliberately narrow: Malicious/Suspicious are NOT downgraded. Missing
+    # intel did not prevent those detections, and relabelling a real detection
+    # as "Inconclusive" would bury a true positive — the worse failure.
     if intel_partial:
-        all_reasons.append(
-            "⚠ Threat-intelligence lookup was incomplete on this scan (a key "
-            "source such as VirusTotal did not return in time). This result is "
-            "provisional and may change — re-scan to refresh it."
-        )
+        if verdict == "Clear":
+            verdict = "Inconclusive"
+            all_reasons.append(
+                "⚠ INCONCLUSIVE — not a clean bill of health. No indicators were found, "
+                "but threat-intelligence was incomplete on this scan: VirusTotal (the "
+                "verdict-critical source) did not return, so this artifact could not be "
+                "fully checked. Re-scan to resolve."
+            )
+        else:
+            all_reasons.append(
+                "⚠ Threat-intelligence lookup was incomplete on this scan (a key "
+                "source such as VirusTotal did not return in time). This result is "
+                "provisional and may change — re-scan to refresh it."
+            )
 
     return {
         "score":       final_score,

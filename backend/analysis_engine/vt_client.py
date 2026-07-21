@@ -12,6 +12,37 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ── Rate-limit retry ──────────────────────────────────────────────────────────
+# VT's public tier allows 4 requests/MINUTE (240/hour, 500/day). The per-minute
+# burst is the binding limit by far — a 429 here almost always means "you asked
+# again too quickly", not "you are out of quota", and it clears within the
+# minute. That distinction matters: without a retry, one burst 429 marks the
+# whole scan 'partial' (VirusTotal is the verdict-critical source), which now
+# downgrades a clean-looking result to Inconclusive. A short backoff converts
+# most of those into complete scans.
+VT_RATE_LIMIT_RETRIES = 2
+VT_RATE_LIMIT_BACKOFF_SECONDS = 15
+
+
+def _get_with_rate_limit_retry(endpoint: str, headers: dict, timeout: int = 15):
+    """GET that retries ONLY on HTTP 429, with a fixed backoff.
+
+    Any other status (including 404, which is meaningful to callers) returns
+    immediately. Worst case adds ~30s to a scan — acceptable versus reporting a
+    provisional verdict when a 15s wait would have produced a real one.
+    """
+    response = requests.get(endpoint, headers=headers, timeout=timeout)
+    for attempt in range(VT_RATE_LIMIT_RETRIES):
+        if response.status_code != 429:
+            return response
+        logger.warning(
+            "VT rate limited (429); backing off %ss then retrying (%d/%d).",
+            VT_RATE_LIMIT_BACKOFF_SECONDS, attempt + 1, VT_RATE_LIMIT_RETRIES,
+        )
+        time.sleep(VT_RATE_LIMIT_BACKOFF_SECONDS)
+        response = requests.get(endpoint, headers=headers, timeout=timeout)
+    return response
+
 
 def _extract_detections(attrs: dict, limit: int = 10) -> list:
     """Pulls named vendor verdicts out of VT's per-engine results.
@@ -49,7 +80,7 @@ def get_url_report(url: str, api_key: str) -> dict:
     try:
         # 1. Check if VT already has a report for this URL
         endpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
-        response = requests.get(endpoint, headers=headers, timeout=15)
+        response = _get_with_rate_limit_retry(endpoint, headers)
 
         if response.status_code == 200:
             attrs = response.json().get("data", {}).get("attributes", {})
@@ -207,7 +238,7 @@ def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict
 
     try:
         endpoint = f"https://www.virustotal.com/api/v3/files/{file_hash}"
-        response = requests.get(endpoint, headers=headers, timeout=15)
+        response = _get_with_rate_limit_retry(endpoint, headers)
 
         if response.status_code == 200:
             attrs = response.json().get("data", {}).get("attributes", {})

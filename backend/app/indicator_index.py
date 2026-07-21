@@ -46,22 +46,40 @@ def index_job_indicators(db, job_id: str, score_data: dict) -> None:
 def lookup_prior_jobs(db, current_job_id: str, score_data: dict) -> dict:
     """
     Return {kind: {value: [other_job_ids]}} for the current job's values —
-    only indicators that already appear in OTHER jobs. Targeted indexed query,
-    not a full-history scan.
+    only indicators that already appear in OTHER ARTIFACTS. Targeted indexed
+    query, not a full-history scan.
+
+    "Other" is keyed on file_hash, not job_id: the same artifact rescanned
+    produces a new job carrying identical indicators, so matching on job_id alone
+    would make a file cluster with copies of itself and render as a campaign
+    ("shares 4 indicators with 4 other jobs" — all of them itself). That was
+    masked while a 24h result cache short-circuited duplicate scans before they
+    were ever indexed; with only a 60s debounce, rescans are normal and this
+    exclusion is what keeps clustering meaningful.
     """
     out = {k: {} for k in _KINDS}
+    current_hash = (
+        db.query(ScanJob.file_hash)
+          .filter(ScanJob.job_id == current_job_id)
+          .scalar()
+    )
     for kind, values in _values_for(score_data).items():
         if not values:
             continue
-        rows = (
+        query = (
             db.query(IndicatorIndex.value, IndicatorIndex.job_id)
               .filter(
                   IndicatorIndex.kind == kind,
                   IndicatorIndex.value.in_(values),
                   IndicatorIndex.job_id != current_job_id,
               )
-              .all()
         )
+        if current_hash:
+            query = (
+                query.join(ScanJob, ScanJob.job_id == IndicatorIndex.job_id)
+                     .filter(ScanJob.file_hash != current_hash)
+            )
+        rows = query.all()
         matches: dict = {}
         for value, jid in rows:
             bucket = matches.setdefault(value, [])

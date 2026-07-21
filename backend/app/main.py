@@ -205,22 +205,29 @@ def _normalize_url(url: str) -> str:
         return url
 
 
-# ── Result cache (same file → same verdict, within 24h) ───────────────────────
-RESULT_CACHE_TTL_HOURS = 24
+# ── Duplicate-submission debounce ─────────────────────────────────────────────
+# Deliberately NOT a result cache. A 24h cache used to replay a verdict verbatim
+# for a whole day, which meant a single wrong answer (a junk ThreatFox hit that
+# scored google.com as Malicious) stayed wrong until the TTL expired, and a
+# sample that VirusTotal had not caught up with yet froze at its safer-looking
+# early verdict. Threat intel moves — a rescan SHOULD be allowed to disagree.
+#
+# What remains is a short debounce whose only job is to collapse accidental
+# duplicate submissions (a double-clicked button, an app retry, a resubmit after
+# a flaky network) so one user action costs one scan's worth of external API
+# quota. Anything past the window is a genuine rescan and runs the full pipeline.
+RESULT_DEBOUNCE_SECONDS = 60
 
-def _find_cached_result(db, file_hash: str, exclude_job_id: str):
-    """Most-recent Completed, NON-partial ScanJob with identical bytes inside the
-    TTL. Returns its stored `results` (score_data) to copy, or None.
+def _find_recent_duplicate(db, file_hash: str, exclude_job_id: str):
+    """Most-recent Completed, NON-partial ScanJob with identical bytes submitted
+    within the debounce window. Returns its stored `results` to copy, or None.
 
-    This is the core 'same file → same result, everywhere' guarantee: a re-scan
-    of the same content reuses the earlier verdict verbatim instead of re-running
-    a non-deterministic pipeline and re-hitting every external API. Partial
-    results (a key intel source didn't complete) are skipped so a timeout can't
-    freeze into the cache.
+    Partial results (a verdict-critical intel source did not complete) are never
+    reused, so a rate-limited scan can't be handed back as if it were finished.
     """
     if not file_hash:
         return None
-    cutoff = datetime.utcnow() - timedelta(hours=RESULT_CACHE_TTL_HOURS)
+    cutoff = datetime.utcnow() - timedelta(seconds=RESULT_DEBOUNCE_SECONDS)
     rows = (
         db.query(ScanJob)
         .filter(
@@ -345,18 +352,18 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
     try:
         scan_started_at = time.time()
 
-        # ── 0. Result cache (same file → same verdict, within 24h) ───────────
-        # If identical bytes were scanned in the last 24h with a complete
-        # (non-partial) result, reuse that verdict verbatim: a new job_id but an
-        # identical score/verdict/indicators. This is what makes the same file
-        # give the same answer on web and app, and avoids re-hitting every
-        # external API. File metadata (name, URL, duration) is refreshed to this
-        # request; the analytical result is copied unchanged.
-        cached = _find_cached_result(db, job.file_hash, exclude_job_id=job_id)
-        if cached is not None:
-            score_data = dict(cached)
+        # ── 0. Duplicate-submission debounce ─────────────────────────────────
+        # Only collapses the same bytes resubmitted within seconds (double-click,
+        # app retry, resubmit after a flaky network) so one user action costs one
+        # scan's worth of external API quota. A genuine rescan later runs the full
+        # pipeline and is allowed to return a different answer as intel moves.
+        # File metadata (name, URL, duration) is refreshed to this request; the
+        # analytical result is copied unchanged.
+        recent = _find_recent_duplicate(db, job.file_hash, exclude_job_id=job_id)
+        if recent is not None:
+            score_data = dict(recent)
             score_data["original_filename"] = original_filename
-            score_data["cache_reuse"] = True
+            score_data["debounced"] = True
             score_data["scan_duration_seconds"] = round(time.time() - scan_started_at, 2)
             if submitted_url:
                 score_data["submitted_url"] = submitted_url

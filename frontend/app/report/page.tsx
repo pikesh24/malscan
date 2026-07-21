@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
-import { ShieldAlert, Download, Share2, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Package, Archive, Smartphone, MapPin, Network, Activity, PieChart, Radar } from "lucide-react"
+import { ShieldAlert, Download, Share2, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Package, Archive, Smartphone, MapPin, Network, Activity, PieChart, Radar, HelpCircle, AlertTriangle } from "lucide-react"
 import dynamic from "next/dynamic"
 import { apiUrl } from "../../lib/config"
 import GraphWidget from "./GraphWidget"
@@ -164,16 +164,25 @@ function ReportContent() {
 
     const isClear = verdict === 'Clear'
     const isSuspicious = verdict === 'Suspicious'
-    
+    // "Inconclusive" = the scan could not complete (VirusTotal unavailable), so
+    // nothing-found must NOT be painted green. Styled slate — neither safe nor
+    // confirmed-bad. Note the ternaries below fall through to the red/Malicious
+    // styling, so any new verdict MUST get an explicit branch here or it renders
+    // as "High Confidence Threat".
+    const isInconclusive = verdict === 'Inconclusive'
+    // Surfaced independently of the verdict: a Malicious/Suspicious result can
+    // also be partial (intel incomplete) without being downgraded.
+    const isPartial = reportData?.partial === true
+
     // Glassmorphism Theme
     const themeColors = {
-        bg: isClear ? 'bg-green-50' : isSuspicious ? 'bg-amber-50' : 'bg-red-50',
+        bg: isClear ? 'bg-green-50' : isInconclusive ? 'bg-slate-50' : isSuspicious ? 'bg-amber-50' : 'bg-red-50',
         textMain: 'text-[#121212]',
         textSub: 'text-gray-500',
-        icon: isClear ? 'text-green-500' : isSuspicious ? 'text-amber-500' : 'text-[#FF3B00]',
-        iconGlow: isClear ? 'bg-green-500/20' : isSuspicious ? 'bg-amber-500/20' : 'bg-red-500/20',
-        bar: isClear ? 'bg-green-500' : isSuspicious ? 'bg-amber-500' : 'bg-[#FF3B00]',
-        IconComponent: isClear ? Check : ShieldAlert
+        icon: isClear ? 'text-green-500' : isInconclusive ? 'text-slate-500' : isSuspicious ? 'text-amber-500' : 'text-[#FF3B00]',
+        iconGlow: isClear ? 'bg-green-500/20' : isInconclusive ? 'bg-slate-500/20' : isSuspicious ? 'bg-amber-500/20' : 'bg-red-500/20',
+        bar: isClear ? 'bg-green-500' : isInconclusive ? 'bg-slate-400' : isSuspicious ? 'bg-amber-500' : 'bg-[#FF3B00]',
+        IconComponent: isClear ? Check : isInconclusive ? HelpCircle : ShieldAlert
     }
     
     // Determine the label for the Target box
@@ -244,9 +253,11 @@ function ReportContent() {
                     <span className="text-gray-500 uppercase tracking-wider truncate max-w-[120px] md:max-w-none">JOB: {id.split('-')[0]}</span>
                     <span className={`px-2 py-1 font-bold rounded-sm uppercase tracking-widest shrink-0 ${isClear
                             ? 'bg-green-900 text-green-400'
-                            : isSuspicious
-                                ? 'bg-amber-900 text-amber-400'
-                                : 'bg-red-900 text-[#FF3B00]'
+                            : isInconclusive
+                                ? 'bg-slate-800 text-slate-300'
+                                : isSuspicious
+                                    ? 'bg-amber-900 text-amber-400'
+                                    : 'bg-red-900 text-[#FF3B00]'
                         }`}>{verdict}</span>
                 </div>
                 <div className="flex flex-wrap gap-4 relative w-full md:w-auto justify-end print:hidden">
@@ -309,6 +320,28 @@ function ReportContent() {
                 track widths render unreliably in Chrome's print/PDF engine
                 (the cause of the column-overlap bug), whereas a simple
                 full-width vertical flex stack always renders correctly. */}
+            {/* INCOMPLETE-INTEL BANNER — a scan whose verdict-critical source
+                (VirusTotal) did not complete is provisional. Shown for ANY
+                verdict: a Malicious/Suspicious result can be partial too without
+                being downgraded, and a reader must not read either as final. */}
+            {isPartial && (
+                <div className="max-w-[1400px] mx-auto px-4 md:px-8 mt-4">
+                    <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3">
+                        <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
+                        <div>
+                            <p className="text-xs font-bold tracking-widest uppercase text-amber-800">
+                                Incomplete Intelligence — Verdict Provisional
+                            </p>
+                            <p className="text-xs text-amber-900/80 mt-1">
+                                VirusTotal did not return in time on this scan (usually a temporary
+                                rate limit), so this artifact could not be fully checked. This is not
+                                a clean bill of health — re-scan to resolve it.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <main className="max-w-[1400px] mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4 print:p-0 print:m-0 print:gap-6 print:!block">
 
                 {/* COL 1: VERDICT & SCORE */}
@@ -323,13 +356,13 @@ function ReportContent() {
                         
                         <h2 className={`text-[10px] font-bold tracking-[0.2em] uppercase mb-2 ${themeColors.textSub}`}>Analysis Verdict</h2>
                         <h1 className={`text-3xl md:text-4xl font-medium tracking-tight mb-6 leading-tight ${themeColors.textMain}`}>
-                            {isClear ? 'No Threat Detected.' : isSuspicious ? 'Suspicious Activity Detected.' : 'High Confidence Threat.'}
+                            {isClear ? 'No Threat Detected.' : isInconclusive ? 'Scan Could Not Complete.' : isSuspicious ? 'Suspicious Activity Detected.' : 'High Confidence Threat.'}
                         </h1>
 
                         {/* TARGET SCANNED */}
                         <div className="mb-6">
                             <h3 className={`text-[9px] font-bold uppercase tracking-wider mb-2 ${themeColors.textSub}`}>Target Analyzed</h3>
-                            <div className={`p-3 rounded-md bg-white/80 backdrop-blur-md border border-gray-200/50 shadow-sm border-l-4 ${isClear ? 'border-l-green-500' : isSuspicious ? 'border-l-amber-500' : 'border-l-[#FF3B00]'}`}>
+                            <div className={`p-3 rounded-md bg-white/80 backdrop-blur-md border border-gray-200/50 shadow-sm border-l-4 ${isClear ? 'border-l-green-500' : isInconclusive ? 'border-l-slate-400' : isSuspicious ? 'border-l-amber-500' : 'border-l-[#FF3B00]'}`}>
                                 <p className={`font-mono text-sm md:text-base break-all font-bold ${themeColors.textMain}`}>
                                     {targetLabel}
                                 </p>
