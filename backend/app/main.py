@@ -618,6 +618,24 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             if key in osint_results and "error" not in (osint_results[key] or {}):
                 osint_data[key] = osint_results[key]
 
+        # ── Safe-domain intel suppression ─────────────────────────────────────
+        # A deliberately-submitted URL is kept in `iocs` by _strip_safe_indicators
+        # (via `keep`) so the report can still geolocate it, graph it and render
+        # the URLScan screenshot. But that also means an allow-listed domain
+        # reaches ThreatFox/URLhaus, where a junk entry (malware configs routinely
+        # reference google.com for connectivity checks) returns a 100%-confidence
+        # "hit" worth +70 — enough to flag google.com as Malicious on its own,
+        # and the weak-IOC cap in scoring.py deliberately does not apply to
+        # submitted URLs. Drop the intel MATCH only; all enrichment is untouched.
+        for key, ioc_field in (("threatfox", "matched_ioc"), ("urlhaus", "matched_url")):
+            hit = osint_data.get(key) or {}
+            if not hit.get("found"):
+                continue
+            indicator = hit.get(ioc_field) or ""
+            if _is_safe_url(indicator) or _is_safe_host(indicator):
+                print(f"Safe-domain intel suppressed: {key} match on allow-listed '{indicator}'")
+                osint_data[key] = {"found": False, "suppressed_safe_domain": indicator}
+
         # ── Partial-intel detection ───────────────────────────────────────────
         # VirusTotal is the verdict-critical source: a completed VT lookup can add
         # +100 (or halve the heuristic score), so a VT lookup that was ATTEMPTED
