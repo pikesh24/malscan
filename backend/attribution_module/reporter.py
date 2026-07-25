@@ -152,6 +152,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -185,8 +186,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   .meta-grid .v { font-weight: 600; }
 
   /* ---- section headers ---- */
-  .sec { margin-top: 32px; }
-  .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .sec { margin-top: 26px; }
+  /* break-after keeps a section's title glued to whatever comes right after
+     it, so a page break can never land between a header and its content
+     (an "orphaned heading" at the bottom of a page). */
+  .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; break-after: avoid; }
   .sec-num { font-family: var(--mono); font-weight: 700; font-size: 11px; color: var(--accent); }
   .sec-title { font-family: var(--mono); font-weight: 600; font-size: 11.5px; letter-spacing: 0.13em; text-transform: uppercase; }
   .sec-rule { flex: 1; height: 1px; background: var(--border); }
@@ -214,7 +218,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   /* ---- two-col layouts ---- */
   .cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
   .cols-radar { display: grid; grid-template-columns: 230px 1fr; gap: 24px; align-items: start; }
-  .cols-origin { display: grid; grid-template-columns: 190px 1fr; gap: 20px; align-items: start; }
+  .cols-origin { display: grid; grid-template-columns: 260px 1fr; gap: 20px; align-items: start; }
 
   /* ---- kv table ---- */
   .kv { width: 100%; border-collapse: collapse; }
@@ -225,6 +229,10 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   .kv-box { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
   .kv-box .kv td { padding: 10px 13px; }
   .kv-box .kv td:first-child { padding-right: 0; width: auto; display: block; }
+  /* Overrides the general .kv td:last-child break-all (needed elsewhere for
+     unbroken 64-char hashes) — ISP/ASN/registrar names are normal words and
+     break-all was splitting them mid-word ("...Google L" / "LC"). */
+  .kv-box .kv td:last-child { word-break: normal; overflow-wrap: break-word; }
 
   /* ---- ioc table ---- */
   table.ioc { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 9px; }
@@ -371,23 +379,25 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   {% if vt_stats %}
-  <p style="margin-bottom:10px;font-size:12.5px;">
-    <strong class="mono vmal" style="font-size:13.5px;">{{ vt_stats.get('malicious',0) }} of {{ vt_total }}</strong>
-    antivirus vendors flagged this {{ 'URL' if score_data.get('submitted_url') else 'file' }} on VirusTotal.
-  </p>
-  <div class="cols-2 avoid" style="margin-bottom:{{ '22px' if entropy else '0' }};">
-    <div>{{ vt_donut }}</div>
-    <div>
-      {% if vt_detections %}
-      <div class="card-title" style="margin-bottom:8px;">Vendor detections</div>
+  <div class="avoid" style="margin-bottom:{{ '22px' if entropy else '0' }};">
+    <p style="margin-bottom:10px;font-size:12.5px;">
+      <strong class="mono vmal" style="font-size:13.5px;">{{ vt_stats.get('malicious',0) }} of {{ vt_total }}</strong>
+      antivirus vendors flagged this {{ 'URL' if score_data.get('submitted_url') else 'file' }} on VirusTotal.
+    </p>
+    <div class="cols-2">
+      <div>{{ vt_donut }}</div>
       <div>
-        {% for d in vt_detections %}
-        <span class="chip">{{ d.vendor }} &middot; {{ d.result }}</span>
-        {% endfor %}
+        {% if vt_detections %}
+        <div class="card-title" style="margin-bottom:8px;">Vendor detections</div>
+        <div>
+          {% for d in vt_detections %}
+          <span class="chip">{{ d.vendor }} &middot; {{ d.result }}</span>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="no-data">No individual vendor detection names were returned for this lookup.</p>
+        {% endif %}
       </div>
-      {% else %}
-      <p class="no-data">No individual vendor detection names were returned for this lookup.</p>
-      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -430,7 +440,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
 <!-- ============ APK ANALYSIS ============ -->
 {% set apk_info = score_data.get('apk_info') %}
-{% if apk_info and apk_info.get('is_apk') %}
+{% set apk_has_data = apk_info and apk_info.get('is_apk') and (apk_info.get('package') or apk_info.get('app_label') or apk_info.get('dangerous_permissions') or apk_info.get('permissions')) %}
+{% if apk_has_data %}
 {% set sec.n = sec.n + 1 %}
 <section class="sec">
   <div class="sec-head">
@@ -439,10 +450,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <span class="sec-rule"></span>
   </div>
   <div class="card avoid">
+    {% if apk_info.get('package') or apk_info.get('app_label') %}
     <table class="kv" style="margin-bottom:12px;">
       {% if apk_info.get('package') %}<tr><td>Package</td><td class="mono">{{ apk_info.get('package') }}</td></tr>{% endif %}
       {% if apk_info.get('app_label') %}<tr><td>App Name</td><td>{{ apk_info.get('app_label') }}</td></tr>{% endif %}
     </table>
+    {% endif %}
     {% if apk_info.get('dangerous_permissions') %}
     <div class="card-title" style="color:var(--accent);">Dangerous Permissions ({{ apk_info.get('dangerous_permissions')|length }})</div>
     <div style="margin-bottom:10px;">
@@ -590,6 +603,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
           {% endfor %}
         </tbody>
       </table>
+      {% if iocs_hidden %}
+      <p style="font-size:9.5px;color:var(--muted);font-style:italic;margin-top:8px;">
+        + {{ iocs_hidden }} additional indicator(s) not shown — see the JSON export for the full list.
+      </p>
+      {% endif %}
       {% else %}
       <p class="no-data">No indicators of compromise were extracted from this artifact.</p>
       {% endif %}
@@ -613,6 +631,35 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   <span>MalScan &mdash; Automated Threat Intelligence &amp; Attribution Engine</span>
   <span>Report ID: {{ job_id }} &middot; Investigative use only, not a substitute for professional analysis</span>
 </footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Each render_geo_map() call (report_charts.py) pushes [elementId, lat, lon]
+// onto this queue instead of initializing inline, so every map waits for
+// Leaflet itself plus the full page (including this script, loaded last) to
+// be ready — avoids racing container layout / the Leaflet global.
+window.addEventListener('load', function () {
+  if (typeof L === 'undefined') return;
+  (window.__geomapQueue || []).forEach(function (entry) {
+    var id = entry[0], lat = entry[1], lon = entry[2];
+    var el = document.getElementById(id);
+    if (!el) return;
+    var map = L.map(id, {
+      zoomControl: false, attributionControl: false,
+      dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+    }).setView([lat, lon], 6);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+    L.circle([lat, lon], { radius: 60000, color: '#FF3B00', fillColor: '#FF3B00', fillOpacity: 0.06, weight: 1, opacity: 0.25 }).addTo(map);
+    L.circle([lat, lon], { radius: 25000, color: '#FF3B00', fillColor: '#FF3B00', fillOpacity: 0.12, weight: 1, opacity: 0.35 }).addTo(map);
+    var icon = L.divIcon({
+      className: '', iconSize: [16, 16], iconAnchor: [8, 8],
+      html: '<div style="width:16px;height:16px;background:#FF3B00;border-radius:50%;border:2px solid #0d1117;box-shadow:0 0 10px rgba(255,59,0,0.7);"></div>',
+    });
+    L.marker([lat, lon], { icon: icon }).addTo(map);
+    map.invalidateSize();
+  });
+});
+</script>
 
 </body>
 </html>"""
@@ -685,6 +732,15 @@ def generate_report(job_id: str, score_data: dict, raw_data: dict) -> str:
     for url in indicators.get("urls") or []:
         iocs.append({"type": "URL", "value": url, "note": "Submitted target" if url == target_value else "Extracted indicator"})
 
+    # A packed/adware-laden artifact can carry dozens of embedded domains —
+    # printing all of them turns the appendix into an unreadable multi-page
+    # wall with no navigation. Cap what's printed and say how many were cut,
+    # rather than silently truncating or dumping everything unbounded.
+    IOC_DISPLAY_CAP = 30
+    iocs_total = len(iocs)
+    iocs_hidden = max(0, iocs_total - IOC_DISPLAY_CAP)
+    iocs = iocs[:IOC_DISPLAY_CAP]
+
     context = dict(
         job_id=job_id,
         score_data=score_data,
@@ -699,6 +755,7 @@ def generate_report(job_id: str, score_data: dict, raw_data: dict) -> str:
         osint=osint,
         clusters=clusters,
         iocs=iocs,
+        iocs_hidden=iocs_hidden,
         vt_stats=vt_stats,
         vt_detections=vt_detections,
         vt_total=vt_total,

@@ -880,13 +880,53 @@ async def get_report_html(job_id: str):
     html = _load_report_html(job_id)
     # Defense-in-depth: the report renders strings extracted from hostile files.
     # Template autoescaping is the primary control; CSP blocks anything that slips through.
+    # script-src/style-src are scoped to the exact Leaflet CDN host (for the
+    # Threat Origin map) — not 'unsafe-inline' or a wildcard, so nothing an
+    # attacker-controlled filename/string could smuggle in is able to execute.
     return HTMLResponse(
         content=html,
         headers={
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                "style-src 'unsafe-inline' https://unpkg.com; "
+                "script-src https://unpkg.com; "
+                "img-src data: https://*.basemaps.cartocdn.com"
+            ),
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _render_pdf_sync(html: str) -> bytes:
+    """
+    Runs on a worker thread via run_in_executor (see get_report_pdf below).
+
+    uvicorn forces asyncio.WindowsSelectorEventLoopPolicy on Windows
+    (uvicorn/loops/asyncio.py), and Windows' SelectorEventLoop cannot create
+    subprocesses — only ProactorEventLoop can. Playwright launches Chromium
+    via a subprocess either way (the sync API just hides an internal asyncio
+    loop of its own behind a background thread — it still inherits the same
+    *process-wide* policy, so it fails identically). The actual fix: flip the
+    global policy to Proactor before spinning up a brand-new loop right here
+    via asyncio.run(). This only affects loops created from this point
+    forward — uvicorn's own already-running main loop is untouched.
+    """
+    from playwright.async_api import async_playwright
+
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    async def _run() -> bytes:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.set_content(html, wait_until="networkidle")
+                return await page.pdf(format="Letter", print_background=True, margin={"top": "0.4in", "bottom": "0.4in", "left": "0.4in", "right": "0.4in"})
+            finally:
+                await browser.close()
+
+    return asyncio.run(_run())
 
 
 @app.get("/report/{job_id}/pdf")
@@ -901,23 +941,18 @@ async def get_report_pdf(job_id: str):
     """
     html = _load_report_html(job_id)
     try:
-        from playwright.async_api import async_playwright
+        import playwright  # noqa: F401
     except ImportError:
         raise HTTPException(status_code=501, detail="PDF export requires the 'playwright' package (pip install playwright && playwright install chromium)")
 
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.launch()
-        except Exception:
-            # Chromium itself isn't installed (e.g. cloud deploys skip the heavy
-            # `playwright install chromium` step) — same remedy as a missing package.
-            raise HTTPException(status_code=501, detail="PDF export unavailable in this deployment (headless Chromium not installed — run: playwright install chromium)")
-        try:
-            page = await browser.new_page()
-            await page.set_content(html, wait_until="networkidle")
-            pdf_bytes = await page.pdf(format="Letter", print_background=True, margin={"top": "0.4in", "bottom": "0.4in", "left": "0.4in", "right": "0.4in"})
-        finally:
-            await browser.close()
+    loop = asyncio.get_event_loop()
+    try:
+        pdf_bytes = await loop.run_in_executor(None, _render_pdf_sync, html)
+    except Exception as e:
+        # Chromium itself isn't installed (e.g. cloud deploys skip the heavy
+        # `playwright install chromium` step) — same remedy as a missing package.
+        print(f"PDF generation failed for job {job_id}: {e}")
+        raise HTTPException(status_code=501, detail="PDF export unavailable in this deployment (headless Chromium not installed — run: playwright install chromium)")
 
     return Response(
         content=pdf_bytes,

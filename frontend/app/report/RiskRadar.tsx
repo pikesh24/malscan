@@ -24,30 +24,19 @@ function valueRadius(value: number) {
     return (RADIUS_FLOOR + clamped * (1 - RADIUS_FLOOR)) * R
 }
 
-// Closed Catmull-Rom spline through the vertices, converted to cubic Bezier
-// segments — softens the plot into a rounded blob instead of a sharp-angled
-// polygon, closer to a hand-drawn risk silhouette than a jagged star.
-function smoothClosedPath(points: { x: number; y: number }[]) {
-    const n = points.length
-    const at = (i: number) => points[(i + n) % n]
-    let d = `M ${at(0).x},${at(0).y} `
-    for (let i = 0; i < n; i++) {
-        const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2)
-        const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6
-        const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6
-        d += `C ${c1x},${c1y} ${c2x},${c2y} ${p2.x},${p2.y} `
-    }
-    return d + "Z"
-}
-
 export default function RiskRadar({ axes }: { axes: Axis[] }) {
     const [hovered, setHovered] = useState<number | null>(null)
 
     if (!axes || axes.length === 0) return null
     const n = axes.length
 
+    // Straight polygon, deliberately not a smoothed spline: a Catmull-Rom
+    // curve through points with very different radii (the common case — one
+    // dominant axis, the rest near the floor) can overshoot past its control
+    // points and self-intersect into a jumbled star. A straight polygon
+    // through radial points can never self-intersect.
     const valuePoints = axes.map((a, i) => point(i, n, valueRadius(a.value)))
-    const valuePath = smoothClosedPath(valuePoints)
+    const valuePath = valuePoints.map(p => `${p.x},${p.y}`).join(" ")
     const active = hovered !== null ? axes[hovered] : null
 
     return (
@@ -69,8 +58,8 @@ export default function RiskRadar({ axes }: { axes: Axis[] }) {
                         return <line key={i} x1={CX} y1={CY} x2={p.x} y2={p.y} stroke="#e7e9ec" strokeWidth={1} />
                     })}
 
-                    <path
-                        d={valuePath}
+                    <polygon
+                        points={valuePath}
                         fill="#FF3B00" fillOpacity={0.18} stroke="#FF3B00" strokeWidth={2.5} strokeLinejoin="round"
                         className="transition-all duration-700"
                     />

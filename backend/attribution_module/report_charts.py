@@ -67,6 +67,13 @@ def render_gauge(score: int, verdict: str) -> Markup:
 
 
 # ── Risk profile radar ──────────────────────────────────────────────────────
+# Deliberately a plain straight-edged polygon, not a smoothed spline: a
+# Catmull-Rom curve through points with very different radii (the common
+# case here — one dominant axis, the rest near the floor) can overshoot
+# past its control points and self-intersect, rendering as a jumbled
+# star instead of a shape. A straight polygon through radial points is
+# mathematically guaranteed never to self-intersect, at the cost of
+# slightly less "soft" corners — reliability over polish here.
 
 def render_radar(axes: list) -> Markup:
     if not axes:
@@ -94,8 +101,8 @@ def render_radar(axes: list) -> Markup:
         axis_lines += f'<line x1="{cx}" y1="{cy}" x2="{x:.1f}" y2="{y:.1f}" stroke="#e7e9ec" stroke-width="1"/>'
 
     value_points = [point(i, value_radius(a.get("value", 0))) for i, a in enumerate(axes)]
-    poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in value_points)
-    value_poly = f'<polygon points="{poly}" fill="#FF3B00" fill-opacity="0.18" stroke="#FF3B00" stroke-width="2.5" stroke-linejoin="round"/>'
+    poly_pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in value_points)
+    value_poly = f'<polygon points="{poly_pts}" fill="#FF3B00" fill-opacity="0.18" stroke="#FF3B00" stroke-width="2.5" stroke-linejoin="round"/>'
     dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#FF3B00" stroke="#ffffff" stroke-width="1.5"/>' for x, y in value_points)
 
     labels = ""
@@ -251,12 +258,27 @@ def render_infra_graph(nodes: list, edges: list, origin_label: str = None) -> Ma
     for d, ids in levels.items():
         y = ROW_TOP + row_gap * d
         n = len(ids)
-        chars = 15 if n <= 3 else 11 if n <= 6 else 8
-        for i, nid in enumerate(ids):
-            x = CX if n == 1 else MARGIN + (i + 0.5) * (VIEW - 2 * MARGIN) / n
-            positions[nid] = (x, y)
-            row_size_of[nid] = n
-            chars_of[nid] = chars
+        if n > 7:
+            # Too many same-depth siblings (e.g. 8 IPs + 6 domains all one
+            # hop from the artifact) to fit legibly on one line — split into
+            # two interleaved sub-rows so each has at most ceil(n/2), which
+            # roughly halves the horizontal crowding instead of overlapping.
+            half = math.ceil(n / 2)
+            for sub_ids, sub_y in ((ids[:half], y - 13), (ids[half:], y + 13)):
+                rn = len(sub_ids)
+                chars = 11 if rn <= 6 else 8
+                for i, nid in enumerate(sub_ids):
+                    x = MARGIN + (i + 0.5) * (VIEW - 2 * MARGIN) / rn
+                    positions[nid] = (x, sub_y)
+                    row_size_of[nid] = rn
+                    chars_of[nid] = chars
+        else:
+            chars = 15 if n <= 3 else 11 if n <= 6 else 8
+            for i, nid in enumerate(ids):
+                x = CX if n == 1 else MARGIN + (i + 0.5) * (VIEW - 2 * MARGIN) / n
+                positions[nid] = (x, y)
+                row_size_of[nid] = n
+                chars_of[nid] = chars
 
     def node_radius(ntype, row_size):
         if ntype == "artifact":
@@ -335,15 +357,15 @@ def render_infra_graph(nodes: list, edges: list, origin_label: str = None) -> Ma
 
 
 # ── Threat-origin geo map ───────────────────────────────────────────────────
-# A self-contained equirectangular graticule + abstract continent hints (no
-# tile server / network dependency at PDF-render time) with the real lat/lon
-# projected onto it — visually consistent with the live report's dark-panel
-# GeoMap HUD, but reliable inside a headless-Chromium print pipeline.
+# A real Leaflet map (same CartoDB Voyager tiles as the live web report's
+# frontend/app/report/GeoMap.tsx), not a hand-drawn abstraction — Playwright
+# drives real Chromium with real network access at PDF-render time, so there
+# is no reason to fake it. Leaflet/tiles load via <link>/<script> in the page
+# <head> (reporter.py); this function only emits the map container + a queued
+# init call (processed on window 'load' — see reporter.py) plus the HTML HUD
+# overlay, which stays plain escaped text exactly like before.
 
-_CONTINENT_HINTS = [
-    (95, 90, 55, 42), (150, 205, 26, 45), (300, 65, 26, 22),
-    (310, 150, 34, 55), (430, 95, 85, 55), (505, 215, 24, 16),
-]
+_geo_map_counter = 0
 
 
 def _geo_stat(label: str, value: str) -> str:
@@ -356,48 +378,39 @@ def _geo_stat(label: str, value: str) -> str:
 def render_geo_map(lat, lon, city=None, region=None, country=None, country_code=None, isp=None, asn=None, ip=None) -> Markup:
     if lat is None or lon is None:
         return Markup(
-            f'<div style="height:230px;display:flex;align-items:center;justify-content:center;background:#0d1117;'
+            f'<div style="height:120px;display:flex;align-items:center;justify-content:center;background:#0d1117;'
             f'color:#6b7280;font-family:{MONO};font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;">'
             f"No geolocation data available</div>"
         )
 
     lat, lon = float(lat), float(lon)
-    W, H = 600, 280
-    x = (lon + 180) / 360 * W
-    y = (90 - lat) / 180 * H
+
+    global _geo_map_counter
+    _geo_map_counter += 1
+    map_id = f"geomap-{_geo_map_counter}"
 
     location_label = escape(", ".join(v for v in (city, region, country) if v) or "Unknown")
     cc = escape(country_code) if country_code else ""
 
-    grid = []
-    for glon in range(-180, 181, 30):
-        gx = (glon + 180) / 360 * W
-        grid.append(f'<line x1="{gx:.1f}" y1="0" x2="{gx:.1f}" y2="{H}" stroke="#1f2937" stroke-width="{1.5 if glon == 0 else 1}" opacity="{0.55 if glon == 0 else 0.28}"/>')
-    for glat in range(-90, 91, 30):
-        gy = (90 - glat) / 180 * H
-        grid.append(f'<line x1="0" y1="{gy:.1f}" x2="{W}" y2="{gy:.1f}" stroke="#1f2937" stroke-width="{1.5 if glat == 0 else 1}" opacity="{0.55 if glat == 0 else 0.28}"/>')
-
-    blobs = "".join(f'<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="#1f2937" opacity="0.6"/>' for cx, cy, rx, ry in _CONTINENT_HINTS)
-
-    marker = (
-        f'<line x1="{x:.1f}" y1="0" x2="{x:.1f}" y2="{H}" stroke="#FF3B00" stroke-width="1" stroke-dasharray="3 3" opacity="0.45"/>'
-        f'<line x1="0" y1="{y:.1f}" x2="{W}" y2="{y:.1f}" stroke="#FF3B00" stroke-width="1" stroke-dasharray="3 3" opacity="0.45"/>'
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="17" fill="#FF3B00" opacity="0.12"/>'
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="9" fill="#FF3B00" opacity="0.28"/>'
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="#FF3B00" stroke="#0d1117" stroke-width="1.5"/>'
+    # lat/lon are floats from our own GeoIP lookup, never artifact-derived
+    # strings — safe to interpolate directly into the script, unlike every
+    # other value here (which stay in escaped HTML, never inside <script>).
+    svg = (
+        f'<div id="{map_id}" style="height:230px;background:#0d1117;"></div>'
+        f'<script>(window.__geomapQueue = window.__geomapQueue || []).push(["{map_id}", {lat}, {lon}]);</script>'
     )
 
-    svg = f'<svg viewBox="0 0 {W} {H}" width="100%" style="display:block;background:#0d1117;">{blobs}{"".join(grid)}{marker}</svg>'
-
+    # Leaflet's own panes use z-index up to 700 internally — the HUD divs
+    # need an explicit z-index of their own or they can lose that stack.
     hud_top = (
-        f'<div style="position:absolute;top:10px;left:10px;background:rgba(13,17,23,0.85);border:1px solid #1f2937;padding:8px 11px;font-family:{MONO};">'
+        f'<div style="position:absolute;z-index:1000;top:10px;left:10px;background:rgba(13,17,23,0.85);border:1px solid #1f2937;padding:8px 11px;font-family:{MONO};">'
         f'<div style="font-size:8px;letter-spacing:0.15em;color:#FF3B00;font-weight:700;">&#9673; THREAT ORIGIN</div>'
         f'<div style="font-size:9.5px;color:#d1d5db;margin-top:3px;">{location_label}</div>'
         + (f'<div style="font-size:8.5px;color:#6b7280;margin-top:1px;">{cc}</div>' if cc else "")
         + "</div>"
     )
     hud_bottom = (
-        f'<div style="position:absolute;bottom:10px;right:10px;background:rgba(13,17,23,0.85);border:1px solid #1f2937;'
+        f'<div style="position:absolute;z-index:1000;bottom:10px;right:10px;background:rgba(13,17,23,0.85);border:1px solid #1f2937;'
         f'padding:6px 11px;font-family:{MONO};font-size:9px;color:#9ca3af;">{lat:.4f}&#176;, {lon:.4f}&#176;</div>'
     )
 
