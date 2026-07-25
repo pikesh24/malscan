@@ -1,0 +1,21 @@
+{
+  "class": "file-static",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "scoring.py:520 type mismatch + :527 suspicious strings + :513 entropy",
+  "note": "invoice.pdf.exe - a PE claiming to be a PDF, carrying injection APIs.",
+  "require_reasons": ["mismatch"],
+  "analysis_data": {
+    "static": {
+      "magic_type": "Windows Executable (PE/EXE/DLL)",
+      "extension": ".pdf",
+      "type_mismatch": true,
+      "file_entropy": 7.4,
+      "suspicious_strings": [
+        "VirtualAlloc - allocates executable memory (shellcode)",
+        "CreateRemoteThread - code injection into another process"
+      ]
+    }
+  }
+}

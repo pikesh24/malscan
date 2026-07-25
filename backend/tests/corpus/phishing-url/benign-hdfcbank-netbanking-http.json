@@ -1,0 +1,10 @@
+{
+  "class": "phishing-url",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:105 substring brand match + :134 not-HTTPS",
+  "note": "The same real bank host over http, which is how links actually arrive in SMS. Regression guard: the bogus typosquat flag used to join the not-HTTPS flag and 20+20 tipped a genuine bank login page into Suspicious. Only the not-HTTPS flag should remain.",
+  "forbid_reasons": ["impersonate"],
+  "url_input": "http://netbanking.hdfcbank.com/"
+}

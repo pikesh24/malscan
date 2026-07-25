@@ -1,0 +1,20 @@
+{
+  "class": "apk",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "scoring.py:352 five dangerous permissions + :363 SMS read+send combo",
+  "note": "A legitimate default SMS app - Google Messages, Truecaller. Its permission set is IDENTICAL to the SMS-stealer case in this same class: permissions alone cannot separate the two, only the YARA family match can. Regression guard for the removal of volume-based permission scoring, which used to put both at 50 = Suspicious.",
+  "analysis_data": {
+    "apk": {
+      "is_apk": true,
+      "dangerous_permissions": [
+        "android.permission.READ_SMS",
+        "android.permission.SEND_SMS",
+        "android.permission.RECEIVE_SMS",
+        "android.permission.READ_CONTACTS",
+        "android.permission.READ_PHONE_STATE"
+      ]
+    }
+  }
+}

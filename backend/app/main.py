@@ -107,44 +107,109 @@ def _enforce_rate_limit(request: Request) -> None:
         )
     log.append(now)
 
-# ── URL Allowlist — skip these safe domains for URLScan / analysis ────────────
-SAFE_DOMAIN_PATTERNS = {
-    "microsoft.com", "google.com", "googleapis.com", "gstatic.com",
+# ── Indicator policy ──────────────────────────────────────────────────────────
+# These were one list, and merging them caused a false negative: a document whose
+# only malicious link pointed at raw.githubusercontent.com produced a report
+# reading "no network indicators extracted", because allow-listed indicators were
+# DELETED. That handed anyone a published list of domains to host payloads on and
+# stay invisible. The two kinds of entry need opposite treatment.
+
+# Boilerplate identifiers. Not destinations — they name an XML schema or are
+# reserved by RFC 2606. Every Office and PDF file embeds several. Nothing is ever
+# hosted at them, so deleting them outright is correct and keeps reports readable.
+NAMESPACE_IDENTIFIERS = {
     "w3.org", "xmlsoap.org", "openxmlformats.org", "xml.org",
-    "apache.org", "java.sun.com", "sun.com", "oracle.com",
-    "mozilla.org", "mozilla.com", "webkit.org",
-    "github.com", "githubusercontent.com",
-    "localhost", "127.0.0.1", "0.0.0.0", "::1",
-    "schemas.microsoft.com", "purl.org", "dublincore.org",
-    "apple.com", "adobe.com", "verisign.com",
-    # RFC 2606 reserved documentation/placeholder domains — never real
-    # infrastructure, but low-quality threat-intel feeds sometimes tag them
-    # anyway (e.g. an unconfigured malware-config default gets submitted as
-    # an IOC by mistake). Any hit against these is definitionally noise.
-    # NOTE: this list deletes a domain from the report entirely (no IOC, no
-    # geolocation, no URLScan) — only ever add genuinely meaningless
-    # boilerplate here (reserved names, XML/schema namespaces). Real third-
-    # party infrastructure (jetbrains.com, crbug.com, analytics/ad SDKs) is
-    # deliberately NOT listed: it isn't a threat, but it's real context the
-    # report should still show and enrich.
+    "schemas.microsoft.com", "schemas.android.com",
+    "purl.org", "dublincore.org", "ns.adobe.com", "java.sun.com",
     "example.com", "example.net", "example.org", "example.edu",
-    # Android manifest/schema XML namespace — the schemas.android.com
-    # equivalent of schemas.microsoft.com above; every Android app embeds it.
-    "schemas.android.com",
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
 }
 
-def _is_safe_host(host: str) -> bool:
-    """Returns True if a hostname belongs to a known-safe / metadata-namespace domain."""
+# Real platforms with real content. A bare reference to one carries no threat —
+# and low-quality feeds do tag them (malware configs ping google.com as a
+# connectivity check, which once scored google.com itself as Malicious). But they
+# host arbitrary user uploads, so reputation covers WHO RUNS THE DOMAIN and never
+# an arbitrary path someone else put there. github.com is trustworthy;
+# github.com/<anyone>/<anything> is a stranger's file.
+REPUTABLE_HOSTS = {
+    "google.com", "googleapis.com", "gstatic.com", "microsoft.com",
+    "apple.com", "adobe.com", "oracle.com", "sun.com",
+    "mozilla.org", "mozilla.com", "webkit.org", "apache.org",
+    "github.com", "githubusercontent.com", "verisign.com",
+}
+
+
+def _host_matches(host: str, patterns: set) -> bool:
+    """Exact host or a subdomain of one. Anchored to the end deliberately —
+    substring matching is what made every brand subdomain look like a typosquat,
+    and here it would let `google.com.evil.tk` inherit Google's reputation."""
     host = (host or "").lower().split(":")[0]
-    return any(host == s or host.endswith("." + s) for s in SAFE_DOMAIN_PATTERNS)
+    return any(host == p or host.endswith("." + p) for p in patterns)
+
+
+def _url_host(url: str) -> str:
+    """Host of a URL, tolerating the scheme-less forms that reach the IOC set.
+
+    `iocs["domains"]` holds bare hosts and extraction sometimes yields
+    `github.com/x/p.exe` with no scheme, which urlparse reads as all-path.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.netloc:
+            return parsed.netloc
+        return (url or "").split("#", 1)[0].split("?", 1)[0].partition("/")[0]
+    except Exception:
+        return ""
+
+
+def _is_namespace_identifier(value: str) -> bool:
+    """Boilerplate with nothing behind it — safe to delete from the report."""
+    return _host_matches(_url_host(value) or value, NAMESPACE_IDENTIFIERS)
+
+
+def _is_reputable_host(value: str) -> bool:
+    return _host_matches(_url_host(value) or value, REPUTABLE_HOSTS)
+
+
+def _has_content_path(url: str) -> bool:
+    """True when a URL points at something specific rather than just a domain.
+
+    `https://mail.google.com` is a reference to Google. `https://github.com/
+    x/releases/download/v1/loader.exe` is a file a stranger uploaded. Only the
+    second can be a payload, so only the first is eligible for suppression.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.netloc:
+            return bool((parsed.path or "").strip("/")) or bool(parsed.query)
+        # Scheme-less: urlparse puts the whole string in .path, so a bare
+        # "google.com" would read as path-bearing. Split by hand instead.
+        raw = (url or "").split("#", 1)[0]
+        return bool(raw.partition("/")[2].strip("/")) or "?" in raw
+    except Exception:
+        return False
+
+
+def _is_suppressible_indicator(value: str) -> bool:
+    """True when a threat-intel 'hit' on this indicator should be treated as noise.
+
+    Namespace boilerplate always qualifies. A reputable host qualifies only as a
+    bare reference — the moment a path or query is attached, the URL identifies
+    content the domain's owner did not put there, and a URLhaus or ThreatFox
+    match on it is real evidence that must stand.
+    """
+    if _is_namespace_identifier(value):
+        return True
+    return _is_reputable_host(value) and not _has_content_path(value)
+
+
+def _is_safe_host(host: str) -> bool:
+    """Back-compat: host belongs to a namespace identifier or a reputable domain."""
+    return _host_matches(host, NAMESPACE_IDENTIFIERS | REPUTABLE_HOSTS)
 
 def _is_safe_url(url: str) -> bool:
     """Returns True if the URL belongs to a known-safe domain."""
-    try:
-        from urllib.parse import urlparse
-        return _is_safe_host(urlparse(url).netloc)
-    except Exception:
-        return False
+    return _is_safe_host(_url_host(url))
 
 def _strip_safe_indicators(iocs: dict, keep: str = None) -> None:
     """Drop known-safe / metadata-namespace indicators from `iocs` in place.
@@ -156,24 +221,78 @@ def _strip_safe_indicators(iocs: dict, keep: str = None) -> None:
     scored as "not HTTPS" URL anomalies. This removes them before any of that.
     `keep` (the deliberately-submitted URL/domain) is always preserved.
     """
-    keep_set = {keep} if keep else set()
-    iocs["urls"]    = [u for u in (iocs.get("urls") or [])    if u in keep_set or not _is_safe_url(u)]
-    iocs["domains"] = [d for d in (iocs.get("domains") or []) if d in keep_set or not _is_safe_host(d)]
-    # Also drop safe-list IPs (127.0.0.1 / 0.0.0.0 live in SAFE_DOMAIN_PATTERNS):
-    # defence-in-depth alongside is_reportable_ip at extraction time.
-    iocs["ips"]     = [i for i in (iocs.get("ips") or [])     if i in keep_set or not _is_safe_host(i)]
+    keep_set = set()
+    if keep:
+        keep_set.add(keep)
+        # A submitted URL and the host inside it are the same artifact, but the
+        # IOC set holds them as separate entries: "https://github.com/" in urls,
+        # "github.com" in domains. Keeping only the literal submitted string left
+        # the derived host to be stripped as allow-listed — and WHOIS, DNS and
+        # GeoIP are all looked up from domains[0] AFTER this runs, so submitting
+        # an allow-listed URL produced a report with no enrichment at all: no
+        # registrar, no DNS records, no geolocation, no domain node in the graph.
+        try:
+            host = urlparse(keep).netloc.split(":")[0]
+            if host:
+                keep_set.add(host)
+        except Exception:
+            pass
+    # Only boilerplate is deleted. Reputable hosts stay: a link inside a scanned
+    # file is the subject of the scan, not noise, and deleting it produced
+    # reports that claimed "no network indicators extracted" when there were some.
+    # They simply do not attract threat-intel lookups or scoring — see
+    # _is_suppressible_indicator.
+    iocs["urls"]    = [u for u in (iocs.get("urls") or [])    if u in keep_set or not _is_namespace_identifier(u)]
+    iocs["domains"] = [d for d in (iocs.get("domains") or []) if d in keep_set or not _is_namespace_identifier(d)]
+    # Loopback/unspecified addresses live in NAMESPACE_IDENTIFIERS — defence in
+    # depth alongside is_reportable_ip at extraction time.
+    iocs["ips"]     = [i for i in (iocs.get("ips") or [])     if i in keep_set or not _is_namespace_identifier(i)]
+
+def _url_risk(url: str) -> int:
+    """Heuristic weight of a URL — the sum of its flag weights.
+
+    analyze_url is pure and does no I/O, so every extracted URL can be scored
+    without cost. That is what makes risk-ranking affordable.
+    """
+    try:
+        return sum(analyze_url(url).get("flag_weights") or [])
+    except Exception:
+        return 0
+
+
+def _rank_urls_by_risk(urls: list) -> list:
+    """Scannable URLs, most dangerous first.
+
+    Everything downstream used to take whatever came first, and IOC lists are
+    sorted alphabetically for reproducibility — so in a document containing
+    `aaa-harmless.example/x` and `zzz-evil.tk/payload.exe`, the harmless link
+    won and the payload was never analysed, scanned, or enriched. Which link a
+    scan examined came down to spelling.
+
+    Ties keep alphabetical order so results stay deterministic.
+    """
+    candidates = [
+        u for u in (urls or [])
+        if is_reportable_url(u) and not _is_suppressible_indicator(u)
+    ]
+    return sorted(candidates, key=lambda u: (-_url_risk(u), u))
+
 
 def _pick_best_url(urls: list) -> str | None:
-    """Returns the first well-formed URL that isn't from a known-safe domain.
+    """The riskiest URL worth sending to VirusTotal / URLScan, or None.
+
+    Skips anything a scan would learn nothing from: namespace boilerplate, and
+    bare references to reputable domains (scanning `google.com` tells us
+    nothing). A path-bearing URL on a reputable host is NOT skipped — that is a
+    specific file someone uploaded to a platform, which is exactly the case
+    worth scanning and exactly what used to be dropped.
 
     Requires a real dotted/IP host (is_reportable_url) so a malformed indicator
     scraped from a binary can't be sent to URLScan and trigger 'Invalid URL
-    format'. Returns None if there's no suitable URL.
+    format'.
     """
-    for url in (urls or []):
-        if is_reportable_url(url) and not _is_safe_url(url):
-            return url
-    return None
+    ranked = _rank_urls_by_risk(urls)
+    return ranked[0] if ranked else None
 
 
 def _normalize_url(url: str) -> str:
@@ -534,14 +653,26 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         vt_key = os.environ.get("VT_API_KEY")
         us_key = os.environ.get("URLSCAN_API_KEY")
 
-        # Pick the best (non-safe) URL for external scanning
+        # The riskiest scannable URL, not the alphabetically first one.
         scan_target_url = submitted_url or _pick_best_url(iocs.get("urls", []))
+
+        # Only one domain gets WHOIS/DNS/GeoIP (they are slow and rate-limited),
+        # so which one matters. Taking domains[0] meant spelling decided: a file
+        # citing mail.google.com and netbanking.hdfcbank.com enriched Google,
+        # because "m" sorts before "n" — and the registrar finding for the domain
+        # actually worth looking at never appeared. Prefer the host of the URL we
+        # judged riskiest, falling back to alphabetical when there is no URL.
+        enrich_domain = None
+        if scan_target_url:
+            enrich_domain = next((d for d in domains if d == _url_host(scan_target_url)), None)
+        if not enrich_domain and domains:
+            enrich_domain = domains[0]
 
         # Build a list of futures to run concurrently
         futures = {}
-        if domains:
-            futures["whois"] = loop.run_in_executor(_osint_executor, get_whois, domains[0])
-            futures["dns"]   = loop.run_in_executor(_osint_executor, get_dns_records, domains[0])
+        if enrich_domain:
+            futures["whois"] = loop.run_in_executor(_osint_executor, get_whois, enrich_domain)
+            futures["dns"]   = loop.run_in_executor(_osint_executor, get_dns_records, enrich_domain)
         import socket
         # Only globally-routable, real IPs are worth geolocating / abuse-checking.
         # is_reportable_ip rejects private/loopback/reserved/multicast/x.x.x.0 —
@@ -549,9 +680,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # "threat origin" on the map.
         public_ips = [ip for ip in ips if is_reportable_ip(ip)]
 
-        if not public_ips and domains:
+        if not public_ips and enrich_domain:
             try:
-                resolved_ip = socket.gethostbyname(domains[0])
+                resolved_ip = socket.gethostbyname(enrich_domain)
                 if is_reportable_ip(resolved_ip):
                     public_ips.append(resolved_ip)
                     iocs["ips"].append(resolved_ip)
@@ -634,13 +765,19 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # "hit" worth +70 — enough to flag google.com as Malicious on its own,
         # and the weak-IOC cap in scoring.py deliberately does not apply to
         # submitted URLs. Drop the intel MATCH only; all enrichment is untouched.
+        # Narrowed deliberately: only a BARE reference to a reputable domain (or
+        # namespace boilerplate) is noise. A hit on a path-bearing URL such as
+        # github.com/x/releases/download/loader.exe is a report about a specific
+        # file a stranger uploaded, not about GitHub — discarding those meant a
+        # confirmed URLhaus detection was thrown away because of where the
+        # payload happened to be hosted.
         for key, ioc_field in (("threatfox", "matched_ioc"), ("urlhaus", "matched_url")):
             hit = osint_data.get(key) or {}
             if not hit.get("found"):
                 continue
             indicator = hit.get(ioc_field) or ""
-            if _is_safe_url(indicator) or _is_safe_host(indicator):
-                print(f"Safe-domain intel suppressed: {key} match on allow-listed '{indicator}'")
+            if _is_suppressible_indicator(indicator):
+                print(f"Safe-domain intel suppressed: {key} match on bare reputable/boilerplate '{indicator}'")
                 osint_data[key] = {"found": False, "suppressed_safe_domain": indicator}
 
         # ── Partial-intel detection ───────────────────────────────────────────
@@ -679,7 +816,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 "suspicious_strings":  pe_info.get("suspicious_strings", []),
             },
             "osint":    {**osint_data, "yara": yara_result},
-            "url":      analyze_url(_pick_best_url(iocs.get("urls", [])) or (iocs["urls"][0] if iocs.get("urls") else "")) if iocs.get("urls") else {},
+            # The same URL that was sent for external scanning, so the report's
+            # heuristics and its VirusTotal/URLScan results describe one link
+            # rather than two different ones. scan_target_url is risk-ranked, so
+            # in a multi-link document this is the most dangerous link found,
+            # not whichever happened to sort first.
+            "url":      analyze_url(scan_target_url) if scan_target_url else {},
             "iocs":     iocs,
             "apk":      apk_info,
             "document": doc_info,

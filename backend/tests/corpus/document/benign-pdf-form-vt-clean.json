@@ -1,0 +1,19 @@
+{
+  "class": "document",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "scoring.py:639 benign VirusTotal consensus dampening",
+  "note": "Interactive tax form PDF: form JavaScript plus an open-at-page-1 action, with 62 engines finding nothing. Regression guard for the fix that stopped ordinary form PDFs scoring 90.",
+  "analysis_data": {
+    "document": {
+      "doc_type": "pdf",
+      "has_javascript": true,
+      "has_auto_action": true,
+      "has_js_auto_combo": false
+    },
+    "osint": {
+      "virustotal": {"stats": {"malicious": 0, "suspicious": 0, "harmless": 0, "undetected": 62}}
+    }
+  }
+}

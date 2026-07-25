@@ -140,7 +140,21 @@ def analyze_pdf(file_path: str) -> dict:
         # "/OpenAction << /S /JavaScript ... >>") — the classic drive-by PDF
         # pattern. Mere co-existence of /JS and /OpenAction in the same file is
         # NOT flagged here; that combination is normal for interactive forms.
-        if re.search(rb"/(OpenAction|AA)\b[^>]{0,400}?/(JS|JavaScript)\b", content, re.IGNORECASE | re.DOTALL):
+        # /AA is "additional actions", and the sub-key decides everything. On a
+        # form field (/Fo focus, /K keystroke, /V validate, /C calculate, /F
+        # format) the JavaScript runs only when a user interacts with the field —
+        # that is what every interactive form does. Only a page-open action (/O)
+        # fires by itself.
+        #
+        # Matching /AA followed by any JavaScript treated ordinary form fields as
+        # drive-by documents, scoring them 45 instead of 15. /OpenAction is
+        # unambiguous: it is the document-open handler, so JS in it does execute
+        # on open.
+        _js_auto = (
+            rb"/OpenAction\b[^>]{0,400}?/(JS|JavaScript)\b",
+            rb"/AA\b[^>]{0,200}?/O\b[^>]{0,200}?/(JS|JavaScript)\b",
+        )
+        if any(re.search(p, content, re.IGNORECASE | re.DOTALL) for p in _js_auto):
             result["has_js_auto_combo"] = True
             result["suspicious_flags"].append(
                 "JavaScript wired to execute automatically on document open"

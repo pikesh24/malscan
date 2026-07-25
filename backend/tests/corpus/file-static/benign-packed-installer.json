@@ -1,0 +1,20 @@
+{
+  "class": "file-static",
+  "label": "benign",
+  "priority": "P1",
+  "expect": "Clear",
+  "signal": "scoring.py:513 entropy on a PE + :639 VT dampening",
+  "note": "A legitimate signed installer. Commercial installers are compressed, so they read as high entropy exactly like packed malware - the VT consensus is what separates them.",
+  "analysis_data": {
+    "static": {
+      "magic_type": "Windows Executable (PE/EXE/DLL)",
+      "extension": ".exe",
+      "type_mismatch": false,
+      "file_entropy": 7.5,
+      "suspicious_strings": []
+    },
+    "osint": {
+      "virustotal": {"stats": {"malicious": 0, "suspicious": 0, "harmless": 10, "undetected": 62}}
+    }
+  }
+}

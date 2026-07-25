@@ -1,0 +1,10 @@
+{
+  "class": "phishing-url",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:105 substring brand match",
+  "note": "HDFC's real netbanking host. Regression guard: _check_typosquatting used to find the string 'hdfcbank' inside the domain and report the bank as impersonating itself. A subdomain can only be created by whoever owns the domain, so it IS the brand.",
+  "forbid_reasons": ["impersonate"],
+  "url_input": "https://netbanking.hdfcbank.com/"
+}

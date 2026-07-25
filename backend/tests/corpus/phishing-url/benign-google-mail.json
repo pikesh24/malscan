@@ -1,0 +1,10 @@
+{
+  "class": "phishing-url",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:105 substring brand match",
+  "note": "Gmail's own host. Regression guard: 'google' appears inside 'mail.google.com', which used to make every subdomain of every listed brand read as impersonating that brand.",
+  "forbid_reasons": ["impersonate"],
+  "url_input": "https://mail.google.com/"
+}

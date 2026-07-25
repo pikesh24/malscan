@@ -26,12 +26,20 @@ playwright==1.60.0
 # Threat intelligence (abuse.ch feeds — no key required)
 # MalwareBazaar, ThreatFox, URLhaus clients use requests (already listed above)
 
-# YARA scanning — install separately if on Windows:
-#   pip install yara-python
-# On Windows you may need Visual C++ build tools first:
-#   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-# The engine runs fine without it — YARA will be skipped gracefully.
-# yara-python>=4.3.0
+# YARA scanning. Now a declared dependency rather than an optional extra.
+#
+# While optional it was never installed anywhere, so the rule file was never
+# compiled — and it did not compile: an unreferenced string in one rule and an
+# unsupported regex construct in another each took all 21 rules down with them.
+# Both failures reported as "yara_available: False", indistinguishable from the
+# dependency simply being absent, so a dead detection engine looked exactly like
+# a disabled one. Declaring it means tests/test_yara_rules.py actually runs and
+# a broken rule file fails the build instead of silently disabling itself.
+#
+# Prebuilt wheels exist for CPython on Windows and manylinux, so no Visual C++
+# build tools are needed on either dev or Render. The scanner still degrades
+# gracefully if an install genuinely fails.
+yara-python>=4.3.0
 
 # Optional: AbuseIPDB IP reputation
 # No extra package needed — uses requests (already listed)

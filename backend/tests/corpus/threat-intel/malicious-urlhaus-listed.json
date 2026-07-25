@@ -1,0 +1,19 @@
+{
+  "class": "threat-intel",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "scoring.py:406 URLhaus match",
+  "note": "A URL abuse.ch has confirmed is distributing malware, submitted directly so it is the artifact rather than an embedded reference.",
+  "analysis_data": {
+    "submitted_url": "http://203.0.113.44/payload.bin",
+    "iocs": {"urls": ["http://203.0.113.44/payload.bin"], "domains": [], "ips": ["203.0.113.44"]},
+    "osint": {
+      "urlhaus": {
+        "found": true,
+        "threat": "malware_download",
+        "matched_url": "http://203.0.113.44/payload.bin"
+      }
+    }
+  }
+}

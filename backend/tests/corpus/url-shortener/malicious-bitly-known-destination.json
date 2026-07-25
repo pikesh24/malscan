@@ -1,0 +1,27 @@
+{
+  "class": "url-shortener",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "scoring.py:406 URLhaus match on the submitted URL + shortener flag",
+  "note": "A shortened link whose destination threat intel has actually confirmed. This is what it takes to call a shortener malicious - the shortening itself is not evidence, the destination is. Replaces an earlier case that labelled a bare bit.ly link malicious on no evidence at all.",
+  "analysis_data": {
+    "submitted_url": "http://bit.ly/3xKp9Qr",
+    "iocs": {"urls": ["http://bit.ly/3xKp9Qr"], "domains": ["bit.ly"], "ips": []},
+    "url": {
+      "domain": "bit.ly",
+      "suspicious_flags": [
+        "Not using HTTPS — connection is unencrypted.",
+        "URL shortener detected (bit.ly) — hides the real destination, common in phishing."
+      ],
+      "flag_weights": [5, 10]
+    },
+    "osint": {
+      "urlhaus": {
+        "found": true,
+        "threat": "malware_download",
+        "matched_url": "http://bit.ly/3xKp9Qr"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "class": "phishing-url",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "url_processor.py:80 typosquat via Levenshtein",
+  "note": "One character off paypal.com (digit 1 for letter l). Regression guard: under a flat +20 per flag, a textbook lookalike domain over HTTPS scored 20 against a 35-point threshold and was reported Clear. A brand lookalike is rare and specific enough to warrant a warning on its own, so it is now worth 35.",
+  "url_input": "https://paypa1.com/signin"
+}

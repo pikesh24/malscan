@@ -1,0 +1,16 @@
+{
+  "class": "document",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "scoring.py:459 VBA macros + :462 dangerous macro keywords",
+  "note": "Resume or invoice .docm with an auto-executing macro - the standard email malware delivery.",
+  "require_reasons": ["macro"],
+  "analysis_data": {
+    "document": {
+      "doc_type": "ooxml",
+      "has_macros": true,
+      "suspicious_macro_keywords": ["Shell", "CreateObject", "WScript.Shell"]
+    }
+  }
+}
