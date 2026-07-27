@@ -1134,7 +1134,7 @@ async def get_report_pdf(job_id: str):
     """
     html = _load_report_html(job_id)
     try:
-        import playwright  # noqa: F401
+        from playwright.async_api import async_playwright
     except ImportError:
         raise HTTPException(status_code=501, detail="PDF export requires the 'playwright' package (pip install playwright && playwright install chromium)")
 
