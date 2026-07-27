@@ -6,6 +6,7 @@ TestClient executes FastAPI background tasks synchronously, so by the time
 POST /upload returns, the scan job has already finished.
 """
 
+import importlib.util
 import io
 import os
 import struct
@@ -359,3 +360,26 @@ def test_submitted_safe_domain_is_kept_as_an_indicator(client):
     assert results["verdict"] in ("Clear", "Inconclusive")
     assert any("github.com" in d for d in results["indicators"]["domains"]), \
         "submitted domain was stripped from its own report"
+
+
+# ── PDF export ────────────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(importlib.util.find_spec("playwright") is None,
+                    reason="playwright package not installed")
+def test_unreachable_rented_browser_is_not_reported_as_a_missing_install(client, monkeypatch):
+    """A configured-but-unreachable browser must not be reported as "not installed".
+
+    The deployed backend has no Chromium of its own — it rents one over CDP
+    (BROWSERLESS_WS_URL). An expired token or a down service then fails at
+    exactly the same call a missing local install does, and folding both into
+    the 501 "run playwright install chromium" message would send whoever debugs
+    it off fixing a box that is deliberately never meant to host a browser.
+    """
+    monkeypatch.setattr(app_main, "BROWSER_WS_ENDPOINT", "ws://127.0.0.1:1/devtools/browser/unreachable")
+    monkeypatch.setattr(app_main, "BROWSER_CONNECT_TIMEOUT_MS", 3000)
+
+    job_id = _upload(client, b"pdf export probe", "export-me.txt").json()["job_id"]
+    res = client.get(f"/report/{job_id}/pdf")
+
+    assert res.status_code == 502, f"expected a gateway error, got {res.status_code}"
+    assert "remote browser" in res.json()["detail"]

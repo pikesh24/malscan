@@ -1092,6 +1092,24 @@ async def get_report_html(job_id: str):
     )
 
 
+# Where the PDF endpoint below gets its browser. Two sources, one Playwright API:
+#
+#   unset  → launch a local Chromium (what `playwright install chromium` puts on
+#            a dev machine).
+#   set    → connect over CDP to a hosted Chromium (Browserless), e.g.
+#            wss://production-sfo.browserless.io/chromium?token=...
+#
+# The remote path is what makes PDF export work in the cloud at all. The free
+# Render instance has neither the disk for a Chromium binary nor the RAM to run
+# one, so it launches nothing — and the packaged Android app cannot fall back to
+# rendering the PDF itself (no print handler in its WebView). "No browser on the
+# server" therefore means no PDF export for every phone user, not a missing
+# nicety on one box. Renting a browser over the network keeps the instance as
+# light as it is today.
+BROWSER_WS_ENDPOINT = os.environ.get("BROWSERLESS_WS_URL", "").strip()
+BROWSER_CONNECT_TIMEOUT_MS = 30_000
+
+
 @app.get("/report/{job_id}/pdf")
 async def get_report_pdf(job_id: str):
     """
@@ -1101,6 +1119,10 @@ async def get_report_pdf(job_id: str):
     -based approaches kept hitting cross-origin canvas restrictions. Driving a
     real, full browser engine here sidesteps both — same engine that already
     prints correctly when a person does it manually from a real Chrome tab.
+
+    The browser is launched locally or rented over the network depending on
+    BROWSERLESS_WS_URL — see the constant above. Everything after the connection
+    is identical on both paths.
     """
     html = _load_report_html(job_id)
     try:
@@ -1109,16 +1131,38 @@ async def get_report_pdf(job_id: str):
         raise HTTPException(status_code=501, detail="PDF export requires the 'playwright' package (pip install playwright && playwright install chromium)")
 
     async with async_playwright() as p:
+        if BROWSER_WS_ENDPOINT:
+            try:
+                browser = await p.chromium.connect_over_cdp(BROWSER_WS_ENDPOINT, timeout=BROWSER_CONNECT_TIMEOUT_MS)
+            except Exception as e:
+                # Deliberately NOT the 501 below. This deployment IS configured
+                # for PDF export; the rented browser just did not answer (bad
+                # token, exhausted quota, service down, network). Reporting that
+                # as "Chromium not installed" would send whoever debugs it off
+                # installing a browser on a box that is never meant to host one.
+                raise HTTPException(status_code=502, detail=f"PDF export failed: could not reach the remote browser ({type(e).__name__})")
+        else:
+            try:
+                browser = await p.chromium.launch()
+            except Exception:
+                # No browser available from either source: nothing installed
+                # locally and no remote endpoint configured.
+                raise HTTPException(status_code=501, detail="PDF export unavailable in this deployment (no headless Chromium — run `playwright install chromium`, or set BROWSERLESS_WS_URL to a hosted browser)")
         try:
-            browser = await p.chromium.launch()
-        except Exception:
-            # Chromium itself isn't installed (e.g. cloud deploys skip the heavy
-            # `playwright install chromium` step) — same remedy as a missing package.
-            raise HTTPException(status_code=501, detail="PDF export unavailable in this deployment (headless Chromium not installed — run: playwright install chromium)")
-        try:
-            page = await browser.new_page()
+            # A CDP-attached browser already has a default context; new_page()
+            # would ask the remote end for a second, incognito one. Reusing what
+            # is there works on both paths — a freshly launched browser simply
+            # has no contexts yet.
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = await context.new_page()
             await page.set_content(html, wait_until="networkidle")
             pdf_bytes = await page.pdf(format="Letter", print_background=True, margin={"top": "0.4in", "bottom": "0.4in", "left": "0.4in", "right": "0.4in"})
+        except Exception as e:
+            # Rendering over the wire fails in ways a local launch rarely does
+            # (the report waits on network-idle, and remote fonts are fetched
+            # from the rented browser's network). Surface it as a gateway error
+            # rather than an unhandled 500 stack trace.
+            raise HTTPException(status_code=502, detail=f"PDF rendering failed ({type(e).__name__})")
         finally:
             await browser.close()
 

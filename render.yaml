@@ -6,8 +6,10 @@
 #   paths — .env loading, app/vault, sys.path for analysis_engine/ — assume it).
 # - The build installs ALL THREE requirements files: jinja2 / python-whois /
 #   dnspython / defusedxml are runtime deps listed only in the sub-folders.
-# - Playwright's Chromium is deliberately NOT installed (PDF export returns 501
-#   in the cloud — everything else works). Keeps the build light for free tier.
+# - Playwright's Chromium is deliberately NOT installed here — it is large and
+#   needs more RAM to run than the free tier has. PDF export instead drives a
+#   rented browser over the network (BROWSERLESS_WS_URL below); with that unset
+#   it returns a clean 501 and everything else works.
 # - API keys (VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY)
 #   are optional and set manually in the dashboard — never committed.
 
@@ -39,6 +41,15 @@ services:
       # (with the Next.js /api rewrite proxy it does not need CORS).
       - key: MALSCAN_ALLOWED_ORIGINS
         value: https://localhost
+      # Headless Chromium for PDF export, rented over the network instead of run
+      # on this instance (see the note at the top of this file). Set it in the
+      # dashboard — it carries a token, so it is never committed:
+      #   wss://production-sfo.browserless.io/chromium?token=YOUR_TOKEN
+      # This matters most for the Android app: the WebView cannot produce the
+      # PDF itself, so with no browser reachable, phone users get a 501 and no
+      # export at all. Leaving it unset is a supported (degraded) state.
+      - key: BROWSERLESS_WS_URL
+        sync: false
       # Set the enrichment API keys in the Render dashboard (Environment tab):
       #   VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY
 

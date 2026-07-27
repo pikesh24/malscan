@@ -13,7 +13,8 @@ cd backend
 pip install -r requirements.txt
 pip install -r analysis_engine/requirements.txt
 pip install -r attribution_module/requirements.txt
-playwright install chromium   # optional — only needed for PDF export (GET /report/{id}/pdf)
+playwright install chromium   # optional — local browser for PDF export (GET /report/{id}/pdf).
+                              # Skip it and set BROWSERLESS_WS_URL to rent one instead (see Cloud backend).
 
 uvicorn app.main:app --reload --port 8001
 ```
@@ -139,4 +140,29 @@ Worth deploying deliberately and watching the first few scans rather than discov
 **Free-tier notes:**
 - The service sleeps after 15 minutes idle; the next request wakes it (~50s cold start). It only consumes "instance hours" while actually awake, not while asleep.
 - Free Postgres expires after some time — scan results are lost when it does (upgrading to a paid DB plan avoids this, no code change needed).
-- PDF export (`GET /report/{id}/pdf`) is unavailable on the free-tier build (returns a clean `501`) since headless Chromium isn't installed there — everything else works identically to local.
+- PDF export (`GET /report/{id}/pdf`) needs a browser the free tier cannot host — see below. Unconfigured, it returns a clean `501`; everything else works identically to local.
+
+### PDF export in the cloud
+
+The build deliberately skips `playwright install chromium`: the binary is large and running it needs more RAM than the free plan gives. But the Android app *cannot* fall back to rendering the PDF itself — `window.print()` does nothing in its WebView — so with no browser reachable from the backend, **every phone user loses export entirely**, not just this one instance.
+
+Rather than upgrade the plan to host a browser, point the backend at one over the network:
+
+1. Sign up at [browserless.io](https://www.browserless.io/) and copy your API token.
+2. Render dashboard → `malscan-api` → **Environment** → add:
+   ```
+   BROWSERLESS_WS_URL = wss://production-sfo.browserless.io/chromium?token=YOUR_TOKEN
+   ```
+   Swap the region host for `production-lon` or `production-ams` if closer. The `/chromium` path is the CDP endpoint — the one `connect_over_cdp` speaks. (`/chromium/playwright` is a *different*, Playwright-native protocol and will not connect here.)
+3. Redeploy is not required — Render restarts the service when an env var changes.
+
+The endpoint then drives the rented browser exactly as it drives a local one: the report HTML is pushed over the connection with `set_content`, so the remote browser never has to reach back into this service to fetch anything.
+
+Failure modes are kept distinguishable on purpose:
+
+| Response | Meaning |
+| --- | --- |
+| `501` | No browser from either source — nothing installed locally, `BROWSERLESS_WS_URL` unset. |
+| `502` | A browser *was* configured but the render failed — bad token, exhausted quota, service down, or a render timeout. |
+
+Locally nothing changes: leave `BROWSERLESS_WS_URL` unset and `playwright install chromium` keeps working. Setting it in `backend/.env` is the quickest way to test the rented path before deploying.
