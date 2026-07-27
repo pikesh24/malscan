@@ -1,0 +1,18 @@
+{
+  "class": "document",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": "Malicious",
+  "signal": "scoring.py:440 launch action + :447 JS bound to auto-trigger",
+  "note": "Fake invoice PDF that runs JavaScript on open and can launch a program. This is the shape that matters - JS wired to an auto-trigger, not JS on its own.",
+  "require_reasons": ["Launch action"],
+  "analysis_data": {
+    "document": {
+      "doc_type": "pdf",
+      "has_javascript": true,
+      "has_auto_action": true,
+      "has_js_auto_combo": true,
+      "has_launch_action": true
+    }
+  }
+}

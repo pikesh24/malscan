@@ -1,0 +1,21 @@
+{
+  "class": "threat-intel",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": "Malicious",
+  "signal": "URLhaus exact-URL match counts as artifact evidence",
+  "note": "A forwarded text file whose content is a URLhaus-confirmed malware URL, with VirusTotal returning nothing. Found by a real scan: it read 69/Suspicious because the artifact-evidence cap treated a confirmed exact-URL detection as being about 'an indicator the file merely references'. The link was the point of the file. URLhaus matches an exact URL, so a hit describes that precise resource rather than its neighbourhood - unlike ThreatFox on a domain or AbuseIPDB on an address, which stay contextual.",
+  "analysis_data": {
+    "file_hash": "e3b0c44298fc1c149afbf4c8996fb924",
+    "iocs": {"urls": ["http://222.140.182.83:51928/1"], "ips": ["222.140.182.83"], "domains": []},
+    "url": {
+      "domain": "222.140.182.83",
+      "suspicious_flags": ["Not using HTTPS", "URL uses a raw IP address"],
+      "flag_weights": [5, 20]
+    },
+    "osint": {
+      "urlhaus": {"found": true, "threat": "malware_download", "matched_url": "http://222.140.182.83:51928/1"},
+      "geoip": {"countryCode": "CN", "country": "China", "asn": "AS4837 CHINA UNICOM"}
+    }
+  }
+}

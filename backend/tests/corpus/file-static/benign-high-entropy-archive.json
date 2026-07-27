@@ -1,0 +1,17 @@
+{
+  "class": "file-static",
+  "label": "benign",
+  "priority": "P1",
+  "expect": "Clear",
+  "signal": "scoring.py:488 _NATURALLY_COMPRESSED entropy exemption",
+  "note": "An ordinary ZIP. Compressed data is high-entropy by definition, so entropy carries no signal here. Regression guard for that exemption.",
+  "analysis_data": {
+    "static": {
+      "magic_type": "ZIP Archive / Office Open XML / APK / JAR",
+      "extension": ".zip",
+      "type_mismatch": false,
+      "file_entropy": 7.9,
+      "suspicious_strings": []
+    }
+  }
+}

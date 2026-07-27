@@ -282,3 +282,80 @@ def test_rar_inner_files_are_extracted_and_scanned(client):
     # IOCs from INSIDE the RAR surfaced in the report.
     assert "45.33.32.156" in results["indicators"]["ips"]
     assert any("rar-inner.example" in u for u in results["indicators"]["urls"])
+
+
+# ── Layer 2: the pipeline actually wires the scoring changes together ──────────
+# The corpus in tests/corpus/ calls calculate_score() directly, which means it
+# cannot see main.py at all. These tests cover the seam: a refactor of how
+# main.py builds analysis_data could silently undo a scoring fix while every
+# corpus case stayed green.
+
+
+def test_flag_weights_survive_the_pipeline(client):
+    """Per-flag URL weights must reach the scorer through main.py.
+
+    analyze_url() returns 'suspicious_flags' plus a parallel 'flag_weights', and
+    _check_url_flags falls back to a flat +20 per flag when weights are absent.
+    That fallback is deliberate (older callers) but it means a main.py change
+    that dropped flag_weights would revert every URL flag to +20 — reintroducing
+    the false positives phase A removed — without failing a single corpus case.
+
+    A bank subdomain over http is the sharpest probe: one flag worth +5 now,
+    two flags worth 40 (= Suspicious) under the old flat scoring.
+    """
+    res = client.post("/submit-url", json={"url": "http://netbanking.hdfcbank.com/"})
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+
+    assert results["verdict"] == "Clear", (
+        f"real bank subdomain scored {results['score']} via the pipeline: {results['reasons']}"
+    )
+    url_points = [e["points"] for e in results["score_breakdown"] if e["label"] == "URL Anomalies"]
+    assert url_points != [40], "URL flags scored 20 each — flag_weights did not reach the scorer"
+
+
+def test_pipeline_does_not_call_real_bank_subdomain_a_typosquat(client):
+    """The report text is the product; a Clear verdict with a phishing warning
+    attached still tells the user their bank is fake."""
+    res = client.post("/submit-url", json={"url": "https://eportal.incometax.gov.in/"})
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+    assert not any("impersonate" in r.lower() for r in results["reasons"]), results["reasons"]
+
+
+def test_artifact_evidence_rule_applies_through_the_pipeline(client):
+    """Infrastructure-only suspicion must not reach Malicious end-to-end."""
+    res = _upload(client, b"contacts 45.33.32.156 and http://some-host.example/beacon", "notes.txt")
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+    if results["verdict"] == "Malicious":
+        identity = {"Known Malicious Hash Match", "MalwareBazaar Hash Match", "YARA Rule Matches",
+                    "VirusTotal Consensus", "File Structure Analysis", "Document Threat Analysis",
+                    "PE Section Entropy", "APK Permissions"}
+        fired = {e["label"] for e in results["score_breakdown"] if e["points"] > 0}
+        assert fired & identity, (
+            f"Malicious with no artifact evidence — only {sorted(fired)}"
+        )
+
+
+def test_safe_domain_indicators_are_stripped_from_a_file(client):
+    """Boilerplate namespace URLs every document embeds must not become IOCs.
+
+    _strip_safe_indicators runs inside the job, so no corpus case exercises it.
+    """
+    body = (b"<xml xmlns='http://www.w3.org/2001/XMLSchema'>"
+            b"see http://schemas.microsoft.com/office/2004/12/omml and "
+            b"http://real-target.example/payload</xml>")
+    res = _upload(client, body, "doc.xml")
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+
+    urls = " ".join(results["indicators"]["urls"])
+    assert "w3.org" not in urls and "schemas.microsoft.com" not in urls
+    assert "real-target.example" in urls, "stripping removed a genuine indicator too"
+
+
+def test_submitted_safe_domain_is_kept_as_an_indicator(client):
+    """A deliberately submitted URL stays in the report even when allow-listed —
+    the report still needs to geolocate it, graph it and screenshot it."""
+    res = client.post("/submit-url", json={"url": "https://github.com/"})
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+    assert results["verdict"] in ("Clear", "Inconclusive")
+    assert any("github.com" in d for d in results["indicators"]["domains"]), \
+        "submitted domain was stripped from its own report"

@@ -1,0 +1,28 @@
+{
+  "class": "apk",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "SMS read+send combo + critical YARA family match (scoring.py:_check_yara)",
+  "note": "Banking trojan sideloaded from a WhatsApp forward ('wedding invite', 'KYC update'). What separates it from apk/benign-sms-app is the YARA family match - the two carry byte-identical permission sets, which is why permission volume was removed from scoring. Reaches only Suspicious (55) because one critical YARA match is worth 40; see the finding below.",
+  "finding": "A YARA rule that NAMES a malware family (Drinik, njRAT, AsyncRAT, FakeCalls) is artifact-identity evidence, as strong as a hash match, but scores the same 40 as a generic behaviour rule. Deliberately NOT fixed by raising APK permission weights - that would recreate the benign-sms-app false positive. The real fix is separating family-naming rules from generic behaviour rules (PDF_AutoAction, Generic_Ransomware_Note), which needs benign YARA cases first because the generic rules are FP-prone.",
+  "analysis_data": {
+    "apk": {
+      "is_apk": true,
+      "dangerous_permissions": [
+        "android.permission.READ_SMS",
+        "android.permission.SEND_SMS",
+        "android.permission.RECEIVE_SMS",
+        "android.permission.READ_CONTACTS",
+        "android.permission.READ_PHONE_STATE"
+      ]
+    },
+    "osint": {
+      "yara": {
+        "yara_matches": [
+          {"severity": "critical", "description": "Drinik banking trojan indicators"}
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "class": "document",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "scoring.py:448-454 JavaScript and auto-action scored separately",
+  "note": "The same ordinary form PDF with no VirusTotal result to lean on. Checks the document heuristics are calibrated on their own rather than relying on the VT dampener to rescue them - VT is unavailable on plenty of real scans.",
+  "analysis_data": {
+    "document": {
+      "doc_type": "pdf",
+      "has_javascript": true,
+      "has_auto_action": true,
+      "has_js_auto_combo": false
+    }
+  }
+}

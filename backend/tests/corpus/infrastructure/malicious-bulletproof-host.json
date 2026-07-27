@@ -1,0 +1,19 @@
+{
+  "class": "infrastructure",
+  "label": "malicious",
+  "priority": "P1",
+  "expect": "Suspicious",
+  "signal": "scoring.py:260 country + :265 ASN + :226 domain age + :243 registrar, then the artifact-evidence cap",
+  "note": "Freshly registered domain on a known bulletproof ASN - every infrastructure signal firing at once, and nothing else. Capped at Suspicious on purpose: no file was examined, no URL was submitted, no scanner returned a verdict, so there is no evidence about the artifact itself. Note this is the same shape as benign-business-on-ovh and benign-new-startup-domain in this class, differing only in which ASN - which is exactly why infrastructure alone must not reach 'confirmed malicious'. Reaching Malicious needs a hash match, YARA hit, structural finding or AV detection to accompany it.",
+  "analysis_data": {
+    "osint": {
+      "geoip": {
+        "countryCode": "RU",
+        "country": "Russia",
+        "asn": "AS206728 Media Land LLC",
+        "isp": "Media Land LLC"
+      },
+      "whois": {"creation_date": "{{days_ago:5}}", "registrar": "Reg.ru LLC"}
+    }
+  }
+}

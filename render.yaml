@@ -20,6 +20,16 @@ services:
     buildCommand: pip install -r requirements.txt -r analysis_engine/requirements.txt -r attribution_module/requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      # Pin the interpreter. Render's default moved to Python 3.14, which has no
+      # manylinux wheel for psycopg2-binary or yara-python — so pip installed
+      # neither, the build still "succeeded", and the service died at startup on
+      # `ModuleNotFoundError: No module named 'psycopg2'`. YARA would have failed
+      # the same way, silently: no rules, no error, scans that detect nothing.
+      #
+      # 3.13 has wheels for every dependency and matches local development.
+      # Duplicated in .python-version at the repo root; keep them in step.
+      - key: PYTHON_VERSION
+        value: "3.13.4"
       - key: MALSCAN_DB_URL
         fromDatabase:
           name: malscan-db

@@ -3,7 +3,16 @@ uvicorn==0.30.1
 sqlalchemy==2.0.31
 # Postgres driver for cloud deploys (MALSCAN_DB_URL=postgresql://...);
 # harmless locally where the SQLite default is used instead.
-# 2.9.10+ required — earlier versions ship no Python 3.13 wheels.
+#
+# Re-enabled. It was commented out to get a failing Render build past pip, but
+# the driver is what SQLAlchemy needs to open a postgresql:// URL at all — so
+# removing it only moved the failure from build time to startup, which is the
+# "ModuleNotFoundError: No module named 'psycopg2'" the service died on.
+#
+# The real cause was the interpreter: Render defaulted to Python 3.14, which has
+# no manylinux wheel for this version (cp38-cp313 only), so pip installed
+# nothing. Python is now pinned to 3.13 in .python-version and render.yaml,
+# where every dependency has a wheel.
 psycopg2-binary==2.9.10
 python-multipart==0.0.18
 python-dotenv==1.1.0
@@ -26,12 +35,20 @@ playwright==1.60.0
 # Threat intelligence (abuse.ch feeds — no key required)
 # MalwareBazaar, ThreatFox, URLhaus clients use requests (already listed above)
 
-# YARA scanning — install separately if on Windows:
-#   pip install yara-python
-# On Windows you may need Visual C++ build tools first:
-#   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-# The engine runs fine without it — YARA will be skipped gracefully.
-# yara-python>=4.3.0
+# YARA scanning. Now a declared dependency rather than an optional extra.
+#
+# While optional it was never installed anywhere, so the rule file was never
+# compiled — and it did not compile: an unreferenced string in one rule and an
+# unsupported regex construct in another each took all 21 rules down with them.
+# Both failures reported as "yara_available: False", indistinguishable from the
+# dependency simply being absent, so a dead detection engine looked exactly like
+# a disabled one. Declaring it means tests/test_yara_rules.py actually runs and
+# a broken rule file fails the build instead of silently disabling itself.
+#
+# Prebuilt wheels exist for CPython on Windows and manylinux, so no Visual C++
+# build tools are needed on either dev or Render. The scanner still degrades
+# gracefully if an install genuinely fails.
+yara-python>=4.3.0
 
 # Optional: AbuseIPDB IP reputation
 # No extra package needed — uses requests (already listed)

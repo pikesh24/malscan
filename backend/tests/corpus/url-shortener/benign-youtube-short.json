@@ -1,0 +1,10 @@
+{
+  "class": "url-shortener",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:43 shortener + :101 typosquat via Levenshtein",
+  "note": "An ordinary shared YouTube link. url_processor deliberately lists youtu.be 'for awareness', which is one flag and fine. Regression guard for the second flag: youtu.be is 2 edits from youtube.com, so YouTube's own short domain read as impersonating YouTube and 20+20 made every shared video link Suspicious. Fixed by listing youtu.be as the brand-owned domain it is.",
+  "forbid_reasons": ["impersonate"],
+  "url_input": "https://youtu.be/dQw4w9WgXcQ"
+}

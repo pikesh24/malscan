@@ -49,9 +49,35 @@ DANGEROUS_PERMISSIONS = {
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 
 
+_PERMISSION_RE = re.compile(r"android\.permission\.[A-Z][A-Z0-9_]{2,}")
+
+
+def _scan_manifest_strings(raw_bytes: bytes) -> list:
+    """Recover permission names from a *binary* AndroidManifest.xml.
+
+    Every APK produced by the Android toolchain ships its manifest as binary
+    AXML, not text — so the XML parse below returned nothing for essentially
+    every real APK ever scanned, and permission analysis was dead in production
+    while looking like an app that simply requested none.
+
+    AXML keeps every string the document uses in a string pool, and permission
+    names survive there as readable text (UTF-16LE in older builds, UTF-8 in
+    newer ones). Reading the pool is not a full AXML parse — it cannot tell a
+    <uses-permission> from a string referenced elsewhere — but a permission name
+    present in the pool was put there because the manifest names it, so the
+    over-detection risk is small and the alternative was detecting nothing.
+    """
+    found = set()
+    for encoding in ("utf-16-le", "utf-8", "latin-1"):
+        try:
+            found.update(_PERMISSION_RE.findall(raw_bytes.decode(encoding, errors="ignore")))
+        except Exception:
+            continue
+    return sorted(found)
+
+
 def _parse_manifest_xml(raw_bytes: bytes) -> dict:
-    """Best-effort parse of a *plain-text* AndroidManifest.xml.
-    Binary AXML will fail gracefully and return empty data."""
+    """Parse AndroidManifest.xml, plain-text or binary AXML."""
     info = {"package": None, "app_label": None, "permissions": [], "dangerous_permissions": []}
     try:
         # Defense-in-depth when defusedxml is unavailable: refuse any document
@@ -74,6 +100,14 @@ def _parse_manifest_xml(raw_bytes: bytes) -> dict:
             info["app_label"] = app_el.attrib.get(f"{{{ANDROID_NS}}}label") or app_el.attrib.get("label")
     except Exception:
         pass
+
+    # Binary AXML (i.e. every real APK) reaches here with nothing found, because
+    # the XML parse above cannot read it. Fall back to the string pool.
+    if not info["permissions"]:
+        info["permissions"] = _scan_manifest_strings(raw_bytes)
+        info["manifest_parse"] = "binary-axml-strings"
+
+    info["dangerous_permissions"] = [p for p in info["permissions"] if p in DANGEROUS_PERMISSIONS]
     return info
 
 

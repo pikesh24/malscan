@@ -1,0 +1,18 @@
+{
+  "class": "apk",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "scoring.py:355 three dangerous permissions",
+  "note": "An ordinary chat app: camera, microphone, contacts. All three are genuinely needed and all three count as dangerous.",
+  "analysis_data": {
+    "apk": {
+      "is_apk": true,
+      "dangerous_permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_CONTACTS"
+      ]
+    }
+  }
+}

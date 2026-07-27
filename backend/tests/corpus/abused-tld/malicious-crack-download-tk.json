@@ -1,0 +1,9 @@
+{
+  "class": "abused-tld",
+  "label": "malicious",
+  "priority": "P1",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "url_processor.py:25 abused TLD, :176 malware keyword, :200 dangerous extension",
+  "note": "Cracked-software bait on a free TLD serving a direct executable.",
+  "url_input": "http://free-crack-download.tk/setup.exe"
+}

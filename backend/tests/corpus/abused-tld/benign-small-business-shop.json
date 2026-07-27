@@ -1,0 +1,9 @@
+{
+  "class": "abused-tld",
+  "label": "benign",
+  "priority": "P1",
+  "expect": "Clear",
+  "signal": "url_processor.py:29 '.shop' on the abused-TLD list + :134 not-HTTPS",
+  "note": "A small business on a .shop domain that has not moved to HTTPS. '.shop', '.store', '.online', '.live' and '.biz' are ordinary commercial TLDs sold by every mainstream registrar. Regression guard for per-flag weighting: under a flat +20 per flag these two routine facts added to 40 = Suspicious; they are now worth 5 each.",
+  "url_input": "http://kirana.shop/menu"
+}

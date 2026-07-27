@@ -1,0 +1,10 @@
+{
+  "class": "phishing-url",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:105 substring brand match",
+  "note": "India's real income tax e-filing portal - a prime target for scam lookalikes, so getting this one wrong trains users to ignore the warning that matters. Regression guard for the brand-subdomain fix.",
+  "forbid_reasons": ["impersonate"],
+  "url_input": "https://eportal.incometax.gov.in/"
+}

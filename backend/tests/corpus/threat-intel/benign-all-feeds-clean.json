@@ -1,0 +1,18 @@
+{
+  "class": "threat-intel",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "every intel check returning nothing",
+  "note": "Baseline: all feeds queried, all came back clean, VirusTotal complete. This must read Clear and not Inconclusive - Inconclusive is reserved for intel that did not finish.",
+  "forbid_reasons": ["INCONCLUSIVE"],
+  "analysis_data": {
+    "osint": {
+      "malwarebazaar": {"found": false},
+      "threatfox": {"found": false},
+      "urlhaus": {"found": false},
+      "abuseipdb": {"abuse_confidence": 0, "checked_ip": "8.8.8.8"},
+      "virustotal": {"stats": {"malicious": 0, "suspicious": 0, "harmless": 12, "undetected": 60}}
+    }
+  }
+}

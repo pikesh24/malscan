@@ -1,0 +1,9 @@
+{
+  "class": "url-shortener",
+  "label": "benign",
+  "priority": "P0",
+  "expect": "Clear",
+  "signal": "url_processor.py:39 shortener + :134 not-HTTPS",
+  "note": "A bare shortened link with nothing else known about it. The label means 'must not be flagged', not 'proven safe' - the destination is genuinely undetermined, and with no evidence either way the honest answer is not to raise an alarm. Flagging this would make every shared short link Suspicious. Under the old flat +20 per flag it scored 40 and did exactly that.",
+  "url_input": "http://bit.ly/3xKp9Qr"
+}

@@ -14,10 +14,16 @@ RULES_DIR = os.path.join(os.path.dirname(__file__), "yara_rules")
 
 _compiled_rules = None
 _yara_available = None
+# Why rules are unavailable, when they are. A compile error and a missing
+# dependency both used to surface as yara_available=False, so a broken rule file
+# was indistinguishable from "yara-python isn't installed" — which is exactly how
+# an unreferenced string in one rule silently disabled all 21 of them, in
+# development and production, for as long as the file had been that way.
+_yara_error = None
 
 
 def _load_rules():
-    global _compiled_rules, _yara_available
+    global _compiled_rules, _yara_available, _yara_error
     if _yara_available is not None:
         return _yara_available
 
@@ -43,10 +49,14 @@ def _load_rules():
 
     except ImportError:
         logger.info("YARA: yara-python not installed — install with `pip install yara-python` to enable")
+        _yara_error = "not_installed"
         _yara_available = False
         return False
     except Exception as e:
-        logger.warning("YARA: failed to compile rules: %s", e)
+        # A broken rule file is a defect, not an absent optional dependency.
+        # Logged at ERROR so it cannot pass for the ordinary "YARA is off" case.
+        logger.error("YARA: rules failed to compile — ALL rules are disabled: %s", e)
+        _yara_error = f"compile_error: {e}"
         _yara_available = False
         return False
 
@@ -63,7 +73,12 @@ def scan_file(file_path: str) -> dict:
         }
     """
     if not _load_rules() or _compiled_rules is None:
-        return {"yara_available": False, "yara_matches": [], "match_count": 0}
+        return {
+            "yara_available": False,
+            "yara_matches": [],
+            "match_count": 0,
+            "yara_error": _yara_error,
+        }
 
     try:
         import yara

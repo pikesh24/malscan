@@ -16,7 +16,7 @@ Input shape (from main.py):
         "geoip": {"country": str, "countryCode": str, "isp": str, "asn": str},
         "dns":   {"A": [str], "MX": [str], "TXT": [str]},
     },
-    "url":  {"domain": str, "suspicious_flags": [str]},
+    "url":  {"domain": str, "suspicious_flags": [str], "flag_weights": [int]},
     "iocs": {"ips": [str], "domains": [str], "urls": [str]},
 }
 
@@ -65,22 +65,79 @@ FLAGGED_REGISTRARS = {
     "pdr ltd", "openprovider",
 }
 
-SUSPICIOUS_ASNS = {
-    "AS9009",   # M247
-    "AS16276",  # OVH
-    "AS51167",  # Contabo
-    "AS197695", # Reg.ru
-    "AS60781",  # LeaseWeb
-    "AS36352",  # ColoCrossing
-    "AS8100",   # QuadraNet
+# Providers whose business is shielding abuse — takedown requests go unanswered.
+# Genuinely discriminative: almost nothing legitimate is here on purpose.
+BULLETPROOF_ASNS = {
     "AS44050",  # Petersburg Internet Network
     "AS206728", # Media Land LLC
+    "AS36352",  # ColoCrossing
+    "AS8100",   # QuadraNet
 }
 
+# Mainstream budget hosting. Abused constantly *because* it is cheap and popular,
+# which is exactly why being hosted here says little — OVH and LeaseWeb are among
+# Europe's largest providers and carry an enormous amount of ordinary traffic.
+# Kept as a weak signal rather than dropped: concentration here is mildly
+# informative, it just cannot carry a verdict.
+BUDGET_HOSTING_ASNS = {
+    "AS16276",  # OVH
+    "AS60781",  # LeaseWeb
+    "AS51167",  # Contabo
+    "AS9009",   # M247
+    "AS197695", # Reg.ru
+}
+
+SUSPICIOUS_ASNS = BULLETPROOF_ASNS | BUDGET_HOSTING_ASNS  # kept for _build_graph
+
+# Where infrastructure sits is weak evidence and easily misread — see
+# _check_geoip for the measurement behind the low weight.
 HIGH_RISK_COUNTRIES = {"RU", "KP", "CN", "IR", "BY", "SY"}
+
+# Anycast CDNs and reverse proxies. An IP behind one of these resolves to
+# whichever edge node happens to be nearest the lookup, so the "country" is where
+# the CDN answered from — not where the site is hosted.
+#
+# Measured on 237 real popular sites: Canada was the most common country in the
+# whole sample at 71, of which 63 were AS13335 (Cloudflare) and 6 AS54113
+# (Fastly). None of those sites are Canadian. The report had been stating a
+# location it could not know, including for an Indian bank.
+ANYCAST_ASNS = {
+    "AS13335":  "Cloudflare",
+    "AS54113":  "Fastly",
+    "AS16509":  "AWS CloudFront",
+    "AS20940":  "Akamai",
+    "AS16625":  "Akamai",
+    "AS15133":  "Edgecast",
+    "AS8075":   "Microsoft Azure Front Door",
+    "AS13414":  "Twitter",
+    "AS54994":  "QUANTIL/CDNetworks",
+    "AS139057": "Cloudflare (APAC)",
+}
+
+
+def _anycast_provider(asn_raw: str) -> Optional[str]:
+    """The CDN name when an ASN is anycast, else None."""
+    if not asn_raw:
+        return None
+    return ANYCAST_ASNS.get(asn_raw.split()[0].upper())
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+# (format, width of the text it produces). The width is NOT len(fmt): "%Y-%m-%d"
+# is 8 characters but formats to 10. Slicing by len(fmt) truncated every date to
+# garbage ("2026-07-20" -> "2026-07-"), so no format ever matched and every
+# lookup fell through to the year-only fallback below — which measures age from
+# 1 January and reported a 5-day-old domain as ~205 days old. That silently
+# disabled domain-age scoring for most of each year, losing the strongest
+# phishing signal we have. Truncation is still deliberate: it drops trailing
+# timezone offsets and fractional seconds that WHOIS records often carry.
+_DATE_FORMATS = (
+    ("%Y-%m-%d %H:%M:%S", 19),
+    ("%Y-%m-%dT%H:%M:%S", 19),
+    ("%Y-%m-%d", 10),
+)
+
 
 def _parse_age_days(creation_date_str) -> Optional[int]:
     if not creation_date_str:
@@ -89,12 +146,15 @@ def _parse_age_days(creation_date_str) -> Optional[int]:
         if isinstance(creation_date_str, list):
             creation_date_str = creation_date_str[0]
         ds = str(creation_date_str).strip()
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        for fmt, width in _DATE_FORMATS:
             try:
-                created = datetime.strptime(ds[:len(fmt)], fmt)
+                created = datetime.strptime(ds[:width], fmt)
                 return (datetime.utcnow() - created).days
             except ValueError:
                 continue
+        # Last resort for records that carry only a year. Deliberately kept, but
+        # it can only ever overstate age (never understate it), so a domain is
+        # never wrongly scored as new because of it.
         year = int(ds[:4])
         return (datetime.utcnow() - datetime(year, 1, 1)).days
     except Exception:
@@ -193,6 +253,11 @@ _LABEL_TO_AXIS = {
     "Registrar Reputation":                     "hosting_risk",
     "Hosting / ASN Risk":                       "hosting_risk",
     "Domain Age Risk":                          "domain_age_risk",
+    # Reductions belong on the axis they pull down, so the radar reflects the
+    # same arithmetic the score-composition bars show. Without an entry here a
+    # reduction still renders as a bar but silently vanishes from the radar —
+    # test_every_emitted_label_has_an_axis guards that from drifting again.
+    "Weak-IOC Corroboration Cap":               "network_reputation",
 }
 
 
@@ -224,15 +289,32 @@ def _check_pe_sections(static):
 
 
 def _check_domain_age(whois):
+    """Newly registered domains really are disproportionately malicious.
+
+    Unlike the registrar and hosting checks, these weights are NOT measured. The
+    Tranco base-rate sample cannot say anything useful here: it contains zero
+    domains under 90 days old and its median age is 19.6 years, because a
+    week-old legitimate business is by definition not among the world's most
+    popular sites. Measuring this needs a source of newly-registered domains
+    with known-good labels, which we do not have.
+
+    So the change here is structural rather than empirical: no single piece of
+    *contextual* evidence should reach "Suspicious" on its own. Age is a fact
+    about a domain's paperwork, not about the artifact, and every legitimate
+    business looks exactly like this on its first day. At 40 it cleared the
+    35-point threshold unaided and flagged every new company. At 30 it still
+    dominates the infrastructure signals and reaches Suspicious the moment
+    anything corroborates it.
+    """
     score, reasons, age = 0, [], None
     age = _parse_age_days(whois.get("creation_date"))
     if age is not None:
         if age <= 7:
-            score, msg = 40, f"Domain registered only {age} day(s) ago — extremely new, high phishing risk."
+            score, msg = 30, f"Domain registered only {age} day(s) ago — extremely new, high phishing risk."
         elif age <= 30:
-            score, msg = 30, f"Domain is newly registered ({age} days old)."
+            score, msg = 20, f"Domain is newly registered ({age} days old)."
         elif age <= 90:
-            score, msg = 15, f"Domain is relatively young ({age} days old)."
+            score, msg = 10, f"Domain is relatively young ({age} days old)."
         else:
             msg = None
         if score:
@@ -241,42 +323,115 @@ def _check_domain_age(whois):
 
 
 def _check_registrar(whois):
-    score, reasons = 0, []
+    """Reports the registrar as context. Deliberately scores nothing.
+
+    Measured against a pinned sample of the Tranco top 10,000
+    (tests/live/base_rates.py): this check fired on 6.8% of them, every hit
+    Namecheap — one of the largest registrars in the world. The list is also
+    incoherent as a signal: Namecheap appears 11 times in the sample and is
+    flagged, GoDaddy appears 16 times and is not, though it is larger and at
+    least as abused. Flagging one and not the other tracks nothing real.
+
+    Registrar choice barely correlates with intent at this granularity — big
+    registrars sell to everyone — so it cannot carry points. It stays in the
+    report because an analyst reading a throwaway-domain case still wants to see
+    it; suppressing the score is not a reason to suppress the fact.
+    """
+    reasons = []
     registrar = (whois.get("registrar") or "").lower()
     for flagged in FLAGGED_REGISTRARS:
         if flagged in registrar:
-            score = 15
-            reasons.append(f"Registrar '{whois.get('registrar')}' frequently abused for throwaway phishing domains.")
+            reasons.append(
+                f"Registrar '{whois.get('registrar')}' is popular with throwaway phishing "
+                f"domains — and with a great many legitimate ones, so on its own it means little."
+            )
             break
-    return score, reasons
+    return 0, reasons
 
 
 def _check_geoip(geoip):
+    """Hosting signals, weighted from measurement rather than from how bad they sound.
+
+    tests/live/base_rates.py enriched a pinned sample of the Tranco top 10,000
+    and ran these very checks against the results:
+
+      - the country check fired on 8.3% of them — Alibaba Cloud CDN, Selectel,
+        NGENIX. One popular legitimate site in twelve.
+      - worse, 39 of 141 geolocated to Canada, which is not where they are:
+        those are Cloudflare anycast edges. For anything behind a CDN — most of
+        the modern web — this field describes an edge node, not the host. So the
+        signal is both common among benign sites and frequently measuring the
+        wrong thing. It survives only as a faint corroborator.
+
+    The ASN list mixed two different things. Bulletproof providers exist to
+    ignore abuse reports, and almost nothing legitimate is there on purpose.
+    OVH, LeaseWeb and Contabo are mainstream budget hosts, abused *because* they
+    are cheap and popular, which is exactly why being on one says little.
+
+    Caveat kept visible: the sample is popular sites, which sit behind Cloudflare
+    and Akamai rather than budget hosts, and small businesses live in the long
+    tail. So these rates are LOWER bounds on how often the checks fire on
+    harmless sites — an argument for smaller weights, not larger.
+    """
     score, reasons = 0, []
     cc = (geoip.get("countryCode") or geoip.get("country_code") or "").upper()
     asn_raw = (geoip.get("asn") or geoip.get("as") or "")
     isp = (geoip.get("isp") or "").lower()
 
+    # Behind an anycast CDN the country field describes an edge node, so it is
+    # not evidence of anything and must not be stated as the host's location.
+    cdn = _anycast_provider(asn_raw)
+    if cdn:
+        reasons.append(
+            f"Served through {cdn}, so the origin server's location and hosting are "
+            f"hidden — the geolocation shown is the nearest {cdn} edge, not the host."
+        )
+        return score, reasons
+
     if cc in HIGH_RISK_COUNTRIES:
-        score += 20
+        score += 5
         reasons.append(f"Infrastructure in high-risk country: {cc} ({geoip.get('country','')}).")
 
     asn_id = asn_raw.split()[0].upper() if asn_raw else ""
-    if asn_id in SUSPICIOUS_ASNS:
+    if asn_id in BULLETPROOF_ASNS:
         score += 20
-        reasons.append(f"ASN {asn_raw} is associated with bulletproof or frequently-abused hosting.")
+        reasons.append(f"ASN {asn_raw} is a bulletproof host — a provider that does not act on abuse reports.")
+    elif asn_id in BUDGET_HOSTING_ASNS:
+        score += 5
+        reasons.append(
+            f"ASN {asn_raw} is budget hosting often used for malicious infrastructure — "
+            f"and by a great many legitimate sites, so on its own it means little."
+        )
     elif any(kw in isp for kw in ["m247","contabo","leaseweb","colocrossing","quadranet"]):
-        score += 10
-        reasons.append(f"Hosting provider '{geoip.get('isp')}' commonly used for malicious infrastructure.")
+        score += 5
+        reasons.append(f"Hosting provider '{geoip.get('isp')}' is frequently used for malicious infrastructure.")
 
     return score, reasons
 
 
 def _check_url_flags(url_data):
+    """Sum the per-flag weights url_processor assigned.
+
+    Flags used to be worth a flat +20 each, which was wrong both ways: two
+    ordinary facts about a harmless site (plain http on a .shop domain) added to
+    40 and read as Suspicious, while a lone brand lookalike — the strongest
+    phishing signal available — scored 20 against a 35-point threshold and read
+    as Clear. Weights now come from url_processor.FLAG_WEIGHTS.
+
+    Callers that supply flags without weights (older fixtures, hand-built input)
+    fall back to the flat 20 so their behaviour is unchanged.
+    """
     score, reasons = 0, []
-    for flag in (url_data.get("suspicious_flags") or []):
-        score += 20
-        reasons.append(f"URL anomaly detected: {flag}")
+    flags = url_data.get("suspicious_flags") or []
+    weights = url_data.get("flag_weights") or []
+    # A document can contain several links and only the riskiest is analysed, so
+    # "URL anomaly detected: not using HTTPS" left the reader guessing which one
+    # it meant. Name it.
+    host = (url_data.get("domain") or "").split(":")[0]
+    prefix = f"URL anomaly on {host}" if host else "URL anomaly detected"
+    for i, flag in enumerate(flags):
+        score += weights[i] if i < len(weights) else 20
+        reasons.append(f"{prefix}: {flag}")
     return min(score, 60), reasons
 
 
@@ -342,31 +497,75 @@ def _check_ioc_volume(iocs):
     return score, reasons
 
 
+# Permissions carrying real evidence, tiered by how rare they are in legitimate
+# apps. The old rule scored permission COUNT (5+ dangerous = +35), which measures
+# app complexity rather than malice: WhatsApp, Truecaller and every default SMS
+# app trip it, and the SMS-stealer and the legitimate SMS app in the corpus have
+# byte-identical permission sets. Volume is now worth nothing and specific rare
+# capabilities carry the weight.
+
+# Almost never legitimate outside enterprise MDM. BIND_ACCESSIBILITY_SERVICE is
+# the main Android banking-malware vector (reads the screen, clicks for you).
+_CRITICAL_PERMISSIONS = {
+    "android.permission.BIND_DEVICE_ADMIN":
+        "can lock the device, wipe it, or block its own uninstall",
+    "android.permission.BIND_ACCESSIBILITY_SERVICE":
+        "can read everything on screen and tap on your behalf — the main banking-overlay technique",
+    "android.permission.INSTALL_PACKAGES":
+        "can install further apps without asking — dropper behaviour",
+}
+
+# Genuinely abused, but with mainstream legitimate uses: app stores and updaters
+# request install prompts, and Truecaller-style caller ID, chat heads and screen
+# recorders all need overlays. Real signal, not on its own.
+_ELEVATED_PERMISSIONS = {
+    "android.permission.REQUEST_INSTALL_PACKAGES":
+        "can prompt to install other apps",
+    "android.permission.SYSTEM_ALERT_WINDOW":
+        "can draw over other apps — used by overlay phishing, and by caller ID and chat bubbles",
+}
+
+
 def _check_apk_permissions(apk_data):
-    """Score boost based on dangerous Android permissions."""
+    """Score Android permissions by discriminative power, not by how many there are."""
     score, reasons = 0, []
     if not apk_data or not apk_data.get("is_apk"):
         return score, reasons
-    dangerous = apk_data.get("dangerous_permissions", [])
-    if len(dangerous) >= 5:
-        score = 35
-        reasons.append(f"APK requests {len(dangerous)} dangerous permissions — highly suspicious.")
-    elif len(dangerous) >= 3:
-        score = 20
-        reasons.append(f"APK requests {len(dangerous)} dangerous permissions.")
-    elif len(dangerous) >= 1:
-        score = 10
-        reasons.append(f"APK requests dangerous permission(s): {', '.join(dangerous[:3])}.")
 
-    # SMS read+send combo is a classic spyware pattern
+    dangerous = apk_data.get("dangerous_permissions", [])
     perm_set = set(dangerous)
+
+    for perm, why in _CRITICAL_PERMISSIONS.items():
+        if perm in perm_set:
+            score += 35
+            reasons.append(f"APK requests {perm.rsplit('.', 1)[-1]} — {why}.")
+
+    for perm, why in _ELEVATED_PERMISSIONS.items():
+        if perm in perm_set:
+            score += 15
+            reasons.append(f"APK requests {perm.rsplit('.', 1)[-1]} — {why}.")
+
+    # Combinations that mean more together than apart.
     if {"android.permission.READ_SMS", "android.permission.SEND_SMS"}.issubset(perm_set):
         score += 15
         reasons.append("APK requests both READ_SMS and SEND_SMS — common in SMS-stealing malware.")
-    if "android.permission.BIND_DEVICE_ADMIN" in perm_set:
-        score += 15
-        reasons.append("APK requests BIND_DEVICE_ADMIN — can lock device or prevent uninstall.")
-    return score, reasons
+    if {"android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.BIND_ACCESSIBILITY_SERVICE"}.issubset(perm_set):
+        score += 25
+        reasons.append(
+            "APK combines screen overlay with accessibility control — the exact pattern used by "
+            "banking-overlay trojans to capture credentials."
+        )
+
+    # Permission volume no longer scores, but the report still says what the app
+    # asked for. Suppressing the score is not a reason to suppress the context.
+    if dangerous and not score:
+        reasons.append(
+            f"APK requests {len(dangerous)} sensitive permission(s): {', '.join(p.rsplit('.', 1)[-1] for p in sorted(dangerous)[:5])}"
+            f"{'...' if len(dangerous) > 5 else ''}. Normal for an app of this kind on its own."
+        )
+
+    return min(score, 60), reasons
 
 
 # ── New threat intelligence checks ──────────────────────────────────────────
@@ -573,22 +772,40 @@ def calculate_score(analysis_data: dict) -> dict:
     # must never water down a confirmed MalwareBazaar/ThreatFox/YARA hit.
     intel_total, heuristic_total = 0, 0
 
+    # A third, cross-cutting tally: how much of the score comes from evidence
+    # about THE ARTIFACT ITSELF (its hash, its bytes, its structure, a scanner's
+    # verdict on it) rather than about the company it keeps (the registrar behind
+    # a domain it mentions, the country an IP sits in, how new a domain is).
+    #
+    # Contextual evidence is real and worth reporting, but it describes
+    # surroundings, not the thing submitted. "Malicious" is a statement about the
+    # artifact, so it requires at least some evidence about the artifact — see
+    # the artifact-evidence requirement near the end of this function. Without
+    # that rule a five-day-old domain on a cheap host reads as confirmed malware
+    # while nothing has actually been examined.
+    artifact_total = 0
+
+    # The submitted URL IS the artifact, so intel and heuristics about it are
+    # artifact evidence. For a file upload the same signals describe indicators
+    # merely embedded in it, which is much weaker.
+    submitted_url = analysis_data.get("submitted_url")
+
     # ── Tier 1: Definitive hash matches (short-circuit if confirmed malware) ──
     file_hash = analysis_data.get("file_hash")
 
     # Internal blocklist
     hash_score, hash_reasons, hash_family, hash_attribution = _check_known_hashes(file_hash)
     if hash_score > 0:
-        intel_total += hash_score; all_reasons += hash_reasons
+        intel_total += hash_score; artifact_total += hash_score; all_reasons += hash_reasons
         family = hash_family; attribution = hash_attribution
     record("Known Malicious Hash Match", hash_score)
 
     # MalwareBazaar (external, authoritative hash DB)
-    mb_score, r = _check_malwarebazaar(osint); intel_total += mb_score; all_reasons += r
+    mb_score, r = _check_malwarebazaar(osint); intel_total += mb_score; artifact_total += mb_score; all_reasons += r
     record("MalwareBazaar Hash Match", mb_score)
 
     # YARA rule matches (pattern-based, very high confidence)
-    yara_score, r = _check_yara(osint); intel_total += yara_score; all_reasons += r
+    yara_score, r = _check_yara(osint); intel_total += yara_score; artifact_total += yara_score; all_reasons += r
     record("YARA Rule Matches", yara_score)
 
     # ── Tier 2: IOC-based threat intelligence ─────────────────────────────────
@@ -605,14 +822,42 @@ def calculate_score(analysis_data: dict) -> dict:
     ab_score, r = _check_abuseipdb(osint);  intel_total += ab_score; all_reasons += r
     record("AbuseIPDB Abuse Confidence", ab_score)
 
+    # ThreatFox on the file hash identifies the artifact. On an embedded IP or
+    # domain it describes something the artifact merely references. Same feed,
+    # very different strength — the same distinction the weak-IOC cap draws.
+    if tf_matched_hash:
+        artifact_total += tf_score
+    elif submitted_url:
+        artifact_total += tf_score
+
+    # URLhaus matches an EXACT URL, so a hit is a statement about that precise
+    # resource rather than about its neighbourhood — strong enough to count as
+    # artifact evidence even when the URL was merely found inside a file.
+    #
+    # Without this, a text file whose entire content was a confirmed
+    # malware-distribution URL scored 69/Suspicious, and the capping message told
+    # the user the evidence concerned "an indicator it merely references". The
+    # link was the point of the file. Under-warning on a forwarded scam message
+    # is the failure this engine exists to avoid.
+    #
+    # AbuseIPDB stays contextual: it reports an address's abuse history, which
+    # describes infrastructure rather than this artifact. ThreatFox on a
+    # domain/IP likewise — that fuzziness is what produced the original
+    # false positive this cap was written for (a 50%-confidence hit on an
+    # incidental example.com).
+    artifact_total += uh_score
+    if submitted_url:
+        artifact_total += ab_score
+
     # ── Tier 3: Document-specific threats ─────────────────────────────────────
-    s, r = _check_document_threats(analysis_data.get("document", {})); heuristic_total += s; all_reasons += r
+    # Structure read out of the submitted file itself — artifact evidence.
+    s, r = _check_document_threats(analysis_data.get("document", {})); heuristic_total += s; artifact_total += s; all_reasons += r
     record("Document Threat Analysis", s)
 
     # ── Tier 4: Heuristic signals (always run) ────────────────────────────────
-    s, r      = _check_enhanced_static(static);    heuristic_total += s; all_reasons += r
+    s, r      = _check_enhanced_static(static);    heuristic_total += s; artifact_total += s; all_reasons += r
     record("File Structure Analysis", s)
-    s, r      = _check_pe_sections(static);        heuristic_total += s; all_reasons += r
+    s, r      = _check_pe_sections(static);        heuristic_total += s; artifact_total += s; all_reasons += r
     record("PE Section Entropy", s)
     s, r, age = _check_domain_age(whois);          heuristic_total += s; all_reasons += r
     record("Domain Age Risk", s)
@@ -620,15 +865,21 @@ def calculate_score(analysis_data: dict) -> dict:
     record("Registrar Reputation", s)
     s, r      = _check_geoip(geoip);               heuristic_total += s; all_reasons += r
     record("Hosting / ASN Risk", s)
+    # URL anomalies describe the submitted URL when one was submitted; for a file
+    # upload they describe links found inside it.
     s, r      = _check_url_flags(url_data);        heuristic_total += s; all_reasons += r
+    if submitted_url:
+        artifact_total += s
     record("URL Anomalies", s)
     s, r      = _check_ioc_volume(iocs);           heuristic_total += s; all_reasons += r
     record("IOC Volume", s)
-    vt_score, r = _check_virustotal(osint);        intel_total += vt_score; all_reasons += r
+    vt_score, r = _check_virustotal(osint);        intel_total += vt_score; artifact_total += vt_score; all_reasons += r
     record("VirusTotal Consensus", vt_score)
     s, r      = _check_urlscan(osint);             heuristic_total += s; all_reasons += r
+    if submitted_url:
+        artifact_total += s
     record("URLScan Verdict", s)
-    s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; all_reasons += r
+    s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; artifact_total += s; all_reasons += r
     record("APK Permissions", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
@@ -663,41 +914,36 @@ def calculate_score(analysis_data: dict) -> dict:
     final_score = min(intel_total + heuristic_total, 100)
     verdict = "Malicious" if final_score >= 70 else "Suspicious" if final_score >= 35 else "Clear"
 
-    # ── Weak-IOC corroboration cap ────────────────────────────────────────────
-    # A single ThreatFox/URLhaus/AbuseIPDB hit on an indicator EMBEDDED in an
-    # uploaded file (a domain/URL/IP the file merely references) is weaker
-    # evidence than a match on the file itself. On its own it must not push a
-    # file to "Malicious" — that produced false positives (a lone 75%-confidence
-    # ThreatFox hit on an embedded `example.com` scored 70 = Malicious).
+    # ── Artifact-evidence requirement ─────────────────────────────────────────
+    # "Malicious" is a claim about the submitted artifact, so it takes at least
+    # some evidence about that artifact: its hash, its bytes, its structure, or a
+    # scanner's verdict on it. Contextual signals — the registrar behind a domain
+    # it mentions, the country an IP sits in, how recently a domain was
+    # registered, a threat-intel hit on an indicator merely embedded in a file —
+    # describe the surroundings, not the thing itself.
     #
-    # So: for FILE uploads only (a submitted URL *is* the artifact, not an
-    # embedded reference), if the Malicious verdict rests solely on such
-    # IOC-based intel with NO corroboration from a file-hash source
-    # (known-hash / MalwareBazaar / ThreatFox-on-hash / YARA) or VirusTotal,
-    # cap the verdict at Suspicious. Hash-based hits keep full weight, so true
-    # positives are untouched.
-    submitted_url = analysis_data.get("submitted_url")
-    corroborated = bool(hash_score or mb_score or yara_score or vt_score or tf_matched_hash)
-    ioc_intel_score = (0 if tf_matched_hash else tf_score) + uh_score + ab_score
-    if (
-        verdict == "Malicious"
-        and not submitted_url
-        and not corroborated
-        and ioc_intel_score > 0
-    ):
-        score_without_ioc_intel = min((intel_total - ioc_intel_score) + heuristic_total, 100)
-        if score_without_ioc_intel < 70:
-            reduction = final_score - 69
-            final_score = 69
-            verdict = "Suspicious"
-            record("Weak-IOC Corroboration Cap", -reduction)
-            all_reasons.append(
-                "Verdict capped at Suspicious: the only malware-grade evidence is a "
-                "threat-intel match on a network indicator embedded in the file, not "
-                "on the file itself, and nothing corroborates it (no file-hash match, "
-                "YARA rule, or VirusTotal detection). Treat as suspicious pending "
-                "confirmation rather than confirmed-malicious."
-            )
+    # Without this rule those signals stack: a five-day-old domain (+40) on a
+    # flagged ASN (+40) with a cheap registrar (+15) reaches 95 and is declared
+    # confirmed malware, having examined nothing. Every legitimate new business
+    # on cheap hosting looks exactly like that. It also generalises the earlier
+    # weak-IOC cap, which drew the same distinction for file uploads only.
+    #
+    # Deliberately a cap, not a suppression: the score, the reasons and every
+    # indicator stay in the report. Only the claim "confirmed malicious" is
+    # withheld, and the reason says so.
+    if verdict == "Malicious" and artifact_total == 0:
+        reduction = final_score - 69
+        final_score = 69
+        verdict = "Suspicious"
+        record("Weak-IOC Corroboration Cap", -reduction)
+        all_reasons.append(
+            "Verdict capped at Suspicious: every signal here describes the artifact's "
+            "surroundings — hosting, registrar, domain age, or a threat-intel match on "
+            "an indicator it merely references — and nothing was found in the artifact "
+            "itself (no hash match, YARA rule, structural finding, or antivirus "
+            "detection). Treat as suspicious pending confirmation rather than "
+            "confirmed-malicious."
+        )
 
     score_breakdown.sort(key=lambda e: e["points"], reverse=True)
     risk_profile = _build_risk_profile(score_breakdown)
@@ -748,6 +994,9 @@ def calculate_score(analysis_data: dict) -> dict:
             "country":         geoip.get("country"),
             "country_code":    (geoip.get("countryCode") or geoip.get("country_code")),
             "hosting":         geoip.get("isp"),
+            # Lets the report label the map honestly instead of asserting a
+            # country it cannot know for a CDN-fronted site.
+            "anycast_cdn":     _anycast_provider(geoip.get("asn") or geoip.get("as") or ""),
             "lat":             geoip.get("lat"),
             "lon":             geoip.get("lon"),
             "city":            geoip.get("city"),

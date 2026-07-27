@@ -1,0 +1,9 @@
+{
+  "class": "phishing-url",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "url_processor.py:141 raw IP host, :200 dangerous extension, :134 not-HTTPS",
+  "note": "Direct payload link on a bare IP - the 'install this update' message pattern.",
+  "url_input": "http://45.133.1.1/update.exe"
+}

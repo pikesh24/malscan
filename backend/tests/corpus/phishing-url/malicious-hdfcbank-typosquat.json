@@ -1,0 +1,9 @@
+{
+  "class": "phishing-url",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "url_processor.py:80 typosquat, :25 abused TLD, :134 not-HTTPS",
+  "note": "Bank phishing domain of the kind forwarded over SMS and WhatsApp. Heuristics only, no threat intel, so this is the ceiling of what URL analysis alone achieves.",
+  "url_input": "http://hdfcbank-secure.tk/login"
+}

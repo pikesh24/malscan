@@ -1,0 +1,19 @@
+{
+  "class": "infrastructure",
+  "label": "benign",
+  "priority": "P1",
+  "expect": "Clear",
+  "signal": "scoring.py:231 domain age <= 7 days + :243 flagged registrar",
+  "note": "A real business that registered its domain last week through Namecheap and put it behind Cloudflare. Every legitimate new company looks exactly like this on day one, and it used to score 55 = Suspicious. Registrar now scores nothing (measured at 6.8% of the Tranco top 10,000, every hit Namecheap, while GoDaddy is unflagged despite being larger), and domain age drops to 30 so a fact about paperwork cannot clear the 35-point threshold unaided. Age weights are structural, not measured - the sample holds no domain under 90 days old, since a week-old business is by definition not among the world's most popular sites.",
+  "analysis_data": {
+    "osint": {
+      "geoip": {
+        "countryCode": "US",
+        "country": "United States",
+        "asn": "AS13335 Cloudflare, Inc.",
+        "isp": "Cloudflare, Inc."
+      },
+      "whois": {"creation_date": "{{days_ago:5}}", "registrar": "NameCheap, Inc."}
+    }
+  }
+}

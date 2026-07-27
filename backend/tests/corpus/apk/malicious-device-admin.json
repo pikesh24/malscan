@@ -1,0 +1,20 @@
+{
+  "class": "apk",
+  "label": "malicious",
+  "priority": "P0",
+  "expect": ["Suspicious", "Malicious"],
+  "signal": "scoring.py:366 BIND_DEVICE_ADMIN",
+  "note": "Predatory loan app that takes device-admin rights so it cannot be uninstalled. No threat intel available, so this measures what permission analysis alone can reach.",
+  "analysis_data": {
+    "apk": {
+      "is_apk": true,
+      "dangerous_permissions": [
+        "android.permission.BIND_DEVICE_ADMIN",
+        "android.permission.READ_CONTACTS",
+        "android.permission.READ_CALL_LOG",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    }
+  }
+}
