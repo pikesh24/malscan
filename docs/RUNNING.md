@@ -14,21 +14,45 @@ pip install -r requirements.txt
 pip install -r analysis_engine/requirements.txt
 pip install -r attribution_module/requirements.txt
 playwright install chromium   # optional — only needed for PDF export (GET /report/{id}/pdf)
+
 uvicorn app.main:app --reload --port 8001
 ```
 
 Port 8001 (not 8000) matches the frontend's `/api` proxy — port 8000 is commonly taken by other local services (e.g. Splunk).
 
-**API keys** (all optional — the pipeline skips enrichers whose keys are missing) go in `backend/.env`:
+### After pulling changes
+
+```powershell
+cd backend
+pip install -r requirements.txt   # picks up new dependencies
+python -m pytest -q               # ~15s, confirms the install is complete
+```
+
+**`yara-python` became a required dependency.** Pulling without reinstalling leaves YARA
+off — 21 detection rules silently inactive, with no error and no warning, just scans that
+never detect anything. The same is true of most optional pieces here (RAR extraction, PDF
+export): they degrade quietly by design, so a half-installed environment looks like a working
+one. Running the test suite after a pull is the quickest way to confirm otherwise.
+
+### API keys
+
+Go in `backend/.env` (gitignored):
 
 ```
 VT_API_KEY=...
 URLSCAN_API_KEY=...
-ABUSEIPDB_API_KEY=...
 ABUSECH_AUTH_KEY=...
+ABUSEIPDB_API_KEY=...
 ```
 
-`yara-python` is optional on Windows (needs VC++ build tools) — YARA scanning is skipped gracefully if it's not installed.
+The app runs without them — uploads, static analysis and YARA all work. What stops working
+is threat intelligence, and **the failure is quiet: a scan of real malware can come back
+Clear.** Two matter most:
+
+| key | why |
+|---|---|
+| `VT_API_KEY` | the heaviest signal (up to +100), and a clean 40+ engine result is what stops ordinary documents scoring high |
+| `ABUSECH_AUTH_KEY` | **now required** — abuse.ch made auth mandatory. Without it URLhaus, ThreatFox and MalwareBazaar all return 401, and every lookup reads as "not found" |
 
 ### Backend tests
 
@@ -100,6 +124,17 @@ If a different (or older) build of the app is already installed and the install 
 1. Push this repo to GitHub.
 2. Render dashboard → **New +** → **Blueprint** → select the repo → **Deploy Blueprint**.
 3. Add API keys under the `malscan-api` service's **Environment** tab (same keys as local `.env`, above).
+
+> **`ABUSECH_AUTH_KEY` must be set on Render too.** It is easy to miss because a local
+> `.env` is invisible to the deploy — the file is gitignored and never leaves your machine.
+> Without it, abuse.ch returns 401 and URLhaus, ThreatFox and MalwareBazaar all silently
+> report "not found" in production while working perfectly on your laptop. Same for
+> `VT_API_KEY`.
+
+**YARA now runs in production.** `yara-python` is a declared dependency, so the next deploy
+installs it and 21 detection rules become active for the first time. Prebuilt Linux wheels
+exist for every Python version Render uses, so the build does not compile YARA from source.
+Worth deploying deliberately and watching the first few scans rather than discovering it.
 
 **Free-tier notes:**
 - The service sleeps after 15 minutes idle; the next request wakes it (~50s cold start). It only consumes "instance hours" while actually awake, not while asleep.

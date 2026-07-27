@@ -392,3 +392,43 @@ def test_every_emitted_label_has_an_axis():
         f"score_breakdown label(s) with no radar axis: {unmapped}. "
         "Add them to _LABEL_TO_AXIS or they vanish from the risk profile."
     )
+
+
+# ── Anycast CDNs: the country field describes an edge, not the host ───────────
+
+def test_cdn_fronted_host_does_not_claim_a_country():
+    """Measured on 237 popular sites: Canada was the most common country at 71,
+    of which 63 were Cloudflare and 6 Fastly. None of those sites are Canadian.
+
+    The report was stating a location it could not know — including telling a
+    user an Indian bank was hosted in Canada.
+    """
+    result = calculate_score({
+        "osint": {"geoip": {"countryCode": "CA", "country": "Canada",
+                            "asn": "AS13335 Cloudflare, Inc.", "isp": "Cloudflare, Inc."}},
+    })
+    joined = " ".join(result["reasons"])
+    assert "Cloudflare" in joined and "not the host" in joined
+    assert "high-risk country" not in joined
+    assert result["osint_summary"]["anycast_cdn"] == "Cloudflare"
+
+
+def test_cdn_in_a_listed_country_is_not_scored_on_geography():
+    """A Cloudflare edge answering from Russia says nothing about the origin."""
+    result = calculate_score({
+        "osint": {"geoip": {"countryCode": "RU", "country": "Russia",
+                            "asn": "AS13335 Cloudflare, Inc.", "isp": "Cloudflare"}},
+    })
+    assert result["score"] == 0, result["reasons"]
+
+
+def test_direct_hosting_still_reports_its_country():
+    """The fix must not blind the check where geolocation is meaningful."""
+    result = calculate_score({
+        "osint": {"geoip": {"countryCode": "RU", "country": "Russia",
+                            "asn": "AS206728 Media Land LLC", "isp": "Media Land LLC"}},
+    })
+    joined = " ".join(result["reasons"])
+    assert "high-risk country" in joined
+    assert "bulletproof" in joined
+    assert result["osint_summary"]["anycast_cdn"] is None

@@ -158,3 +158,50 @@ def test_payload_on_reputable_host_outranks_a_bare_reference():
         "https://github.com/x/releases/download/v1/loader.exe",
     ])
     assert ranked[0] == "https://github.com/x/releases/download/v1/loader.exe"
+
+
+# ── Shared hosting cannot inherit a platform's reputation ─────────────────────
+# 120 of the Tranco top 10,000 are public suffixes — github.io at rank 115,
+# workers.dev at 93, blogspot.com at 111, cloudfront.net at 51. Anything built
+# from popularity will eventually contain one, and suffix-matching on github.io
+# would trust every page a stranger uploads there.
+
+from app.main import _host_matches, _is_reputable_host as _reputable  # noqa: E402
+
+
+def test_a_public_suffix_entry_does_not_trust_its_tenants():
+    """Even if shared hosting ends up on a reputation list, tenants stay untrusted."""
+    listed = {"github.io", "web.app", "blogspot.com", "workers.dev"}
+    for tenant in ("evil.github.io", "phish.web.app", "scam.blogspot.com", "bad.workers.dev"):
+        assert not _host_matches(tenant, listed), f"{tenant} inherited its platform's standing"
+    # The platform itself still matches exactly — it is a real domain.
+    assert _host_matches("github.io", listed)
+
+
+def test_ordinary_registrable_domains_still_trust_their_subdomains():
+    """google.com is a domain Google registered, so its subdomains are Google."""
+    assert _reputable("mail.google.com")
+    assert _reputable("drive.google.com")
+    assert _reputable("github.com")
+
+
+def test_user_content_hosts_do_not_inherit_their_platform():
+    """githubusercontent.com and googleapis.com are themselves public suffixes.
+
+    Both are on REPUTABLE_HOSTS, and both serve arbitrary user uploads — they
+    are the two malware-staging hosts identified earlier by reasoning about
+    paths. The PSL reaches the same conclusion structurally, without anyone
+    having to notice: a tenant under a shared suffix is its own registrant.
+    """
+    assert not _reputable("raw.githubusercontent.com")
+    assert not _reputable("storage.googleapis.com")
+    assert not _reputable("attacker-bucket.storage.googleapis.com")
+
+
+def test_payload_on_shared_hosting_is_still_scannable():
+    """A phishing page on shared hosting must remain a scan target."""
+    for url in ("https://evil.github.io/login",
+                "https://phish.web.app/verify",
+                "https://scam.pages.dev/bank"):
+        assert not _is_suppressible_indicator(url), url
+        assert _pick_best_url([url]) == url

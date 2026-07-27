@@ -184,7 +184,7 @@ Hostile input aimed at the scanner rather than the user.
 | XXE | `defusedxml` + DTD guard | ⬜ |
 | Malformed PE header | — | ⬜ |
 | Oversized upload | `MAX_UPLOAD_BYTES` | ✅ covered |
-| SSRF via `/proxy/image` | host allowlist | ⬜ — redirects still followed (AUDIT S3) |
+| SSRF via `/proxy/image` | host allowlist + no redirects + size cap | ✅ fixed |
 
 ---
 
@@ -641,6 +641,310 @@ simplification of the format, so that could not be assumed.
 `yara_false_positives.py` now collects an `android-apks` bucket (`MALSCAN_APK_DIR`, plus
 `~/Downloads`) so this artifact type is measured rather than assumed. Five regression tests
 cover the three rules, each paired with a true-positive case.
+
+### An under-warning found by re-scanning the same file
+
+A text file containing a URLhaus-confirmed malware URL scored **69/Suspicious**. The same
+file had scored 100/Malicious earlier — the only difference was that VirusTotal returned a
+detection the first time and nothing the second. Without VT, the artifact-evidence cap fired.
+
+That exposed a flaw in the cap: it keys on **where** evidence points (artifact vs
+surroundings) and ignores **how strong** it is. URLhaus is abuse.ch confirming *this exact
+URL distributes malware* — a curated, exact-match detection — and the cap treated it the
+same as the weak, fuzzy hit it was written for (a 50%-confidence ThreatFox match on an
+incidental `example.com`). The message shown to the user compounded it, describing the
+evidence as "an indicator it merely references" when the link was the entire content.
+
+The distinction now drawn is match specificity:
+
+| feed | matches | treated as |
+|---|---|---|
+| URLhaus | an exact URL | artifact evidence, even when embedded in a file |
+| MalwareBazaar | a file hash | artifact evidence |
+| ThreatFox on a hash | that file | artifact evidence |
+| ThreatFox on a domain/IP | a neighbourhood | contextual, confidence-scaled |
+| AbuseIPDB | an address's history | contextual |
+
+`testing.txt` now reads 90/Malicious, and the original `example.com` false positive still
+caps at 69/Suspicious. Under-warning on a forwarded scam message is the failure this engine
+exists to avoid.
+
+### Paytm scored 100/100 Malicious
+
+Predicted before the sample arrived, and worse than predicted. India's largest payments app,
+maximum confidence, four *critical* rules (4 × 40, capped at 100):
+
+| rule | matched | reality |
+|---|---|---|
+| `FakeCalls_Banking_App` | `hdfcbank`, `icicibank`, `axisbank` | the bank picker every payments app has |
+| `Drinik_Banking_Trojan` | `incometax.gov` + `AccessibilityService` | Paytm pays taxes; that API name is in every large app |
+| `PowerShell_DownloadCradle` | `downloadFile`, `WebClient`, `iEX(` | **a PowerShell rule on an Android app** |
+| `PDF_JavaScript_Exploit` | `/JavaScript`, `unescape` | **a PDF rule on an Android app** (it bundles WebViews) |
+
+**Two of the four had nothing to do with Android.** No rule stated which file type it applied
+to, so PDF and PowerShell rules ran against APK contents and matched ordinary Java method
+names. Fixed structurally with private gate rules (`IsPDF`, `IsZIP`, `IsPE`, `IsOLE`,
+`IsScriptOrText`) applied to 15 rules. A rule that does not say what it applies to will
+eventually match everything.
+
+Gating cannot help the other two — those are APK rules matching an APK, so the strings
+themselves were wrong. A list of bank names is what legitimate financial software looks
+like, and `AccessibilityService` is an SDK reference rather than an intent. Both branches
+were removed; the family-specific strings (`drinikapk`, `hanaBankServiceCode`,
+`bankCallService`) remain.
+
+Worth owning: the `2 of ($hdfc, $icici, $axis)` branch was **mine**, introduced this morning
+while fixing the unreferenced-`$icici` compile error. The original `$hdfc and $axis` would
+have flagged Paytm too — I made a bad condition slightly worse, and only a real sample showed
+it. Removing it then orphaned those three strings and reproduced the **exact compile error
+from this morning**, disabling all 26 rules again. Caught immediately, because the ERROR-level
+logging added earlier said so plainly instead of looking like "yara-python isn't installed",
+and the compile-guard test failed.
+
+**Paytm now scores 15/Clear** — `REQUEST_INSTALL_PACKAGES`, correct for a payments app. All
+five APKs sampled (Paytm split set, two Malscan debug builds) come back Clear. Permission
+extraction pulled 39 permissions, 12 dangerous, from Paytm's real binary AXML in 6.1s for a
+94.9 MB file.
+
+Two further notes from the same run: `base.apk` is **94.9 MB against a 50 MB
+`MAX_UPLOAD_BYTES`** — a real Paytm APK cannot be uploaded through the web app at all. And
+package-name extraction still returns `None` for binary AXML; the string-pool fallback
+recovers permissions but not the manifest attributes.
+
+### A brand's own other domains are not impersonations of it
+
+Working through the last untested URL flags against realistic benign URLs found three more,
+all in the typosquat check that had already been "fixed" once today:
+
+| URL | scored | reported as |
+|---|---|---|
+| `s3.dualstack.us-east-1.amazonaws.com` | **60** | impersonating amazon.com — twice |
+| `www.amazon.in` | **35** | impersonating amazon.com — *Amazon India* |
+| `login.microsoftonline.com` | **35** | impersonating microsoft.com — *where every M365 user signs in* |
+
+The morning fix handled subdomains (`mail.google.com`) and nothing else. Brands also operate
+on other TLDs (`amazon.in`, `google.co.in`) and on sibling domains they own outright
+(`amazonaws.com`, `microsoftonline.com`, `fbcdn.net`, `office365.com`) — and a substring test
+cannot tell "brand name inside an attacker's domain" from "brand name inside the brand's own
+domain".
+
+Three changes: a `BRAND_OWNED_DOMAINS` set for sibling domains; registrable-label comparison
+so `amazon.in` is recognised as Amazon on another TLD; and the homoglyph check now skips when
+the plain check already matched, since `s3...amazonaws.com` was collecting 35+35 for a single
+observation because normalising digits elsewhere in the host left the brand still matching.
+
+All six benign cases now score 0 and all five lookalikes (`hdfcbank-secure.tk`, `paypa1.com`,
+`amazon-security-alert.tk`, `g00gle.com`, `microsoft-login.xyz`) still score 35–45.
+
+Fifteen parametrised regression tests. Note this is the **third** distinct false positive
+from the same substring match — first brand subdomains, then `youtu.be`, now brand-owned
+siblings. Substring matching on a brand name keeps producing them; the repeated fix is to
+anchor on what someone actually controls.
+
+### Phase C — the Public Suffix List, and why it was not optional
+
+Vendored at `backend/analysis_engine/data/public_suffix_list.dat` (10,240 rules, snapshot
+2026-07-25), parsed by `analysis_engine/public_suffix.py`. No runtime dependency, offline and
+deterministic, so `analysis_engine` keeps its "no external dependencies" property.
+
+The number that settled it: **120 of the Tranco top 10,000 are public suffixes**, and they
+rank high — `googleapis.com` at #7, `cloudfront.net` at #51, `workers.dev` at #93,
+`blogspot.com` at #111, `github.io` at #115. Any allow-list built from popularity will
+contain shared hosting, and suffix-matching on `github.io` trusts every page a stranger
+uploads there. That is where phishing is hosted.
+
+`_host_matches` now refuses to extend a list entry's trust to subdomains when the entry is
+itself a public suffix. The platform still matches exactly; its tenants do not.
+
+**It immediately contradicted an assumption, correctly.** `githubusercontent.com` and
+`googleapis.com` are both public suffixes, so `raw.githubusercontent.com` and
+`storage.googleapis.com` stopped being trusted — and those are precisely the two
+malware-staging hosts identified earlier by hand-reasoning about path-bearing URLs. The PSL
+derives structurally what took a manual investigation to notice, and it will keep doing so
+for platforms nobody has thought about yet.
+
+`registrable_domain()` is now the anchor available to every check that compares hostnames.
+Three separate false positives this session came from substring or last-two-label matching
+— brand subdomains, `youtu.be`, brand-owned siblings — and each fix was a step toward this.
+
+32 tests on the parser (multi-label suffixes `co.uk`/`co.in`, shared hosting, attacker
+prefixing, unknown TLDs, and graceful degradation if the vendored list goes missing), plus
+three attack cases in `test_indicator_policy.py`.
+
+### Phase C — the reputation prior, and replacing the typosquat check
+
+Scoring the **whole Tranco top 10,000** through the URL heuristics — 20,000 URLs, both
+schemes — put **2% at Suspicious, every one of them from the typosquat check**. The fourth
+distinct false-positive class from that one function, after brand subdomains, `youtu.be`,
+and brand-owned siblings. As promised at the third, it got replaced rather than patched.
+
+Two root causes:
+
+- **Levenshtein ≤2 on a five- or six-letter brand lets a third of it differ.** `moodle` vs
+  `google`, `media` vs `india`, `applvn` vs `apple` are all two edits apart, and all three
+  are real sites in the top 10,000. The allowance now scales: one edit up to six characters,
+  two beyond.
+- **Substring matching cannot tell `googledomains.com` (Google's registrar) from
+  `google-login.tk`.** The brand must now appear as a hyphen- or dot-delimited **token**,
+  within the host minus its public suffix — which also covers a brand pushed into a
+  subdomain of someone else's domain (`paypal.com.secure-login.ml`) and stops Amazon's
+  `.amazon` TLD reading as the word "amazon".
+
+Tightening Levenshtein would have lost `g00gle.com`, which had only ever been caught by
+accident at distance 2. The homoglyph branch was supposed to catch it and never did:
+normalising `0→o` produces exactly `google.com`, and asking `_check_typosquatting` about that
+answers "this is Google". It now compares the normalised form against the brand list
+directly, which is the actual signature of a homoglyph attack.
+
+That left a residue no string rule can fix: `telegraph.co.uk` genuinely is one edit from
+telegram.org, `wetter.com` two from twitter.com, `google-analytics.com` really does contain
+"google" as a token. What separates them from `paypa1.com` is not spelling — it is that
+millions of people visit them.
+
+So the reputation prior, `analysis_engine/data/reputable_domains.txt`: 9,880 registrable
+domains from the Tranco top 10,000, pinned, with the **120 public suffixes excluded** — the
+step the PSL work existed to make possible. It suppresses the impersonation flag only, and
+never touches threat intel: a popular site can be compromised, and that is intel's job.
+
+| measurement | before | after |
+|---|---|---|
+| Tranco top-10k (20,000 URLs) | 2.00% | **0.00%** |
+| Tranco 10k–60k, **not allow-listed** (8,000 URLs) | — | **0.17%** |
+| lookalikes detected | 9/12 | **12/12** |
+
+The first row is circular — it measures false positives on the list that was allow-listed —
+so the second is the honest one. Several of even those 0.17% are arguable catches:
+`microsof.net` is one edit from Microsoft, and `microsoft-falcon.net` uses the brand as a
+token.
+
+**A gap found while fixing it:** brands shorter than five characters were skipped outright,
+so **SBI — India's largest bank — could never be detected as a typosquat target**, nor could
+NPCI or GPay. `sbi-netbanking-verify.tk` scored 10. Short brands are now matched as tokens
+only, which is precise enough that SBI's real `onlinesbi.com` stays clean while the lookalike
+is caught.
+
+204 tests passing.
+
+### SSRF in the screenshot proxy — the one AUDIT_REPORT left open
+
+`/proxy/image` fetches a URL server-side on a caller's behalf, so whatever it can reach, a
+caller can reach through it. The host allowlist looked sufficient and was not:
+
+- **`requests.get` follows redirects by default**, so the allowlist only ever validated the
+  *first* hop. An open redirect on the allowed host would have turned this into a proxy for
+  `169.254.169.254` (cloud metadata), `localhost`, or anything else on the network. The
+  scheme check had the same hole — an `https` URL could redirect to `http`.
+- **`resp.content` reads the body with no ceiling.** A 40 MB response was proxied straight
+  through; on Render's 512 MB free tier a few concurrent requests are enough.
+- **The upstream `content-type` was echoed back verbatim.** Since the response is served
+  from the app's own origin, a `text/html` body would have been stored XSS on the app's
+  domain.
+
+Now: `allow_redirects=False` with an explicit rejection of 3xx, a streamed read capped at
+8 MB, and a content-type forced to `image/*` or `application/octet-stream`. Refusing
+redirects outright is both safe and sufficient — urlscan's screenshot URLs are direct, so if
+that ever changes the image visibly breaks rather than quietly becoming SSRF.
+
+Four tests, written failing first; two of them failed against the original code, which is
+what confirmed both bugs were real rather than theoretical.
+
+### The report was asserting a location it could not know
+
+Of 237 real popular sites enriched during the phase-B run, **Canada was the most common
+country in the entire sample — 71 of them.** 63 were AS13335 (Cloudflare) and 6 AS54113
+(Fastly). None of those sites are Canadian.
+
+An anycast CDN answers from whichever edge is nearest the lookup, so the country returned
+describes that edge, not the origin. The report printed it as the host's location anyway —
+including telling a user an Indian bank was hosted in Canada, which was the "threat origin"
+oddity noticed during manual scanning.
+
+Known anycast ASNs are now recognised. The country check is skipped for them entirely (it is
+not evidence of anything), and the report says what is actually true: *"Served through
+Cloudflare, so the origin server's location and hosting are hidden — the geolocation shown
+is the nearest Cloudflare edge, not the host."* `osint_summary.anycast_cdn` carries the
+provider name so the map can be labelled honestly. Direct hosting is unaffected, so a
+bulletproof provider in a listed country still scores.
+
+### Report XSS — checked, and it holds
+
+The report embeds strings chosen by whoever made the scanned file: its name, the URLs and
+IPs inside it, YARA descriptions, WHOIS and GeoIP fields. It is then served from the app's
+own origin, so an unescaped value would be stored XSS triggered by an analyst opening a
+report.
+
+Payloads were pushed through **every** artifact-influenced field at once — filename, reasons,
+indicators, `osint_summary`, `score_breakdown` labels, risk-profile descriptions, graph
+nodes, YARA matches, archive entries, APK package and label, PE section names. All escaped,
+including inside the hand-built SVG charts, and still visible in the report rather than
+silently dropped. `reporter.py`'s `autoescape=True` and `report_charts.py`'s use of
+`markupsafe.escape()` do their job. Four tests pin it.
+
+### Every YARA rule proven able to fire
+
+Fifteen rules were given file-type gates in one change. A gate pointing at the wrong
+container makes a rule permanently unfireable — and indistinguishable from one that simply
+never matches, which is precisely how the whole ruleset stayed dead. Each of the 21 rules now
+has a correctly-typed positive sample, and `test_every_rule_has_a_positive_sample` fails if a
+new rule is added without one, so the table cannot drift behind the file. All 21 fire.
+
+### The intel clients had no tests at all
+
+`conftest.py` stubs every enricher, so the entire suite runs with them replaced by lambdas
+returning `{"found": False}`. Nothing had ever exercised the real parsers — the ones behind
+the heaviest weights in the engine: MalwareBazaar 100, VirusTotal 100, URLhaus 60, ThreatFox
+up to 70.
+
+The risk is quiet rather than loud. A parser that returns "no hit" for a genuine detection
+raises no error and produces a clean-looking scan, which is the same silent capability loss
+as the ruleset that never compiled.
+
+19 tests against the documented API response shapes, both directions: a real hit is
+recognised, and a non-hit is never mistaken for one. Specifically pinned —
+
+- `query_status: "no_results"` on an HTTP 200 must not read as a detection (URLhaus)
+- `confidence_level` must reach `confidence`, since scoring bands 70/35/15 off it
+- `matched_url` must record *which* URL hit, because the artifact-evidence rule and the
+  safe-domain suppression both key on it
+- `abuseConfidenceScore` must reach `abuse_confidence`
+- a missing API key or a network failure must be reported as an error, never as a clean
+  result — `intel_partial` depends on that distinction, and without it a rate-limited scan
+  of real malware reports as Clear
+
+All 19 passed first run: these parsers were correct. Now they stay that way.
+
+### Closing the last untested modules
+
+`urlscan_client`, `indicator_index`, `clustering` and `osint_enricher` were the remaining
+backend modules with no test reference. All four are now covered, and **no backend module is
+untested**.
+
+**URLScan** (12 tests) feeds +40 on `is_malicious` and +15 on a non-zero verdict score, and
+for a submitted URL that counts as artifact evidence — so it can carry a verdict on its own.
+Pinned: a clean verdict is not read as malicious, a missing `verdicts` block does not raise
+or invent a hit, rate limits and timeouts are errors rather than clean results, polling
+exhaustion reports `pending` (distinguishable from "scanned, found nothing"), the
+search fast-path is reused only while fresh, and a stale scan triggers a rescan — a URL that
+was clean a year ago says nothing about it today.
+
+**Clustering** (10 tests). The failure mode here is a wrong *story* rather than a wrong
+verdict. The documented bug — a rescanned file clustering with earlier scans of itself and
+rendering as a campaign — is now pinned from both sides: the same artifact rescanned produces
+no cluster, while a genuinely different file sharing an IP still does. That exclusion keys on
+`file_hash`, not `job_id`, which matters more now that a 60-second debounce has replaced the
+24-hour cache and rescans are ordinary.
+
+**OSINT enricher** (10 tests). Every phase-B weight reads one of these fields, and the
+measurements were taken through this code, so a renamed key would silently invalidate them
+rather than raise. Specifically pinned: `creation_date` arrives in a form `_parse_age_days`
+can actually read (the contract whose absence left domain-age scoring dead), list-valued
+dates from registries that return several are unwrapped, `countryCode` and `as` reach the
+scorer under the names it expects, an anycast ASN survives intact for the Cloudflare check,
+and a WHOIS refusal or an ip-api `status: fail` is an error rather than "no registrar, no
+age, no country".
+
+All 32 passed on the first run — these were correct. The value is that they cannot now
+regress silently, which is exactly how the YARA ruleset and APK manifest parsing died.
 
 ### Still open, in priority order
 

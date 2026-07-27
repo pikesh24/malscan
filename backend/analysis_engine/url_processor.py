@@ -63,6 +63,36 @@ BRAND_DOMAINS = {
     "flipkart.com", "myntra.com", "snapdeal.com", "meesho.com",
 }
 
+# Other domains the same organisations genuinely operate. The substring test in
+# _check_typosquatting cannot tell "brand name inside an attacker's domain" from
+# "brand name inside the brand's own other domain", and it got the second badly
+# wrong: login.microsoftonline.com — where every Microsoft 365 user signs in —
+# was reported as impersonating microsoft.com, and every AWS S3 URL was reported
+# as impersonating amazon.com.
+BRAND_OWNED_DOMAINS = {
+    # Google
+    "googleapis.com", "gstatic.com", "googleusercontent.com", "ggpht.com",
+    "googlevideo.com", "google.co.in", "goo.gl", "withgoogle.com",
+    # Microsoft
+    "microsoftonline.com", "live.com", "msn.com", "office.com", "office365.com",
+    "outlook.com", "sharepoint.com", "windows.net", "azure.com", "bing.com",
+    "msftauth.net", "microsoft.co.in",
+    # Amazon
+    "amazonaws.com", "awsstatic.com", "amazon.in", "media-amazon.com",
+    "ssl-images-amazon.com", "primevideo.com",
+    # Meta
+    "fbcdn.net", "fb.com", "messenger.com", "facebook.net", "instagram.co",
+    # Apple
+    "icloud.com", "apple.news", "mzstatic.com",
+    # Others in the brand list above
+    "paytmbank.com", "paytmmall.com", "phonepe.in", "flipkart.net",
+    "twimg.com", "licdn.com", "netflix.net", "nflxvideo.net",
+}
+
+# Second-level labels used by country registries ("co" in .co.in, "com" in
+# .com.au), so the registrable label of amazon.co.uk is "amazon", not "co".
+_SLD_SUFFIXES = {"co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "in"}
+
 
 def _levenshtein(a: str, b: str) -> int:
     """O(m*n) edit distance — fast enough for short domain names."""
@@ -97,20 +127,90 @@ def _check_typosquatting(domain: str) -> str | None:
     if any(d == brand or d.endswith("." + brand) for brand in BRAND_DOMAINS):
         return None
 
+    # Other domains the same brands genuinely own. A brand's name appearing in a
+    # domain is not impersonation when the brand owns that domain too, and the
+    # substring test below cannot tell the difference:
+    # login.microsoftonline.com is where every Microsoft 365 user signs in, and
+    # it was reported as impersonating microsoft.com.
+    if any(d == alt or d.endswith("." + alt) for alt in BRAND_OWNED_DOMAINS):
+        return None
+
+    # An established site is not a lookalike of another site — it is itself.
+    # Spelling cannot separate telegraph.co.uk (a newspaper, one edit from
+    # telegram.org) or wetter.com (German weather, two from twitter.com) or
+    # google-analytics.com (Google's own, "google" as a token) from paypa1.com.
+    # Traffic can. This replaces hand-maintaining BRAND_OWNED_DOMAINS entry by
+    # entry, which was already three lists deep.
+    #
+    # It only ever suppresses the impersonation flag. Nothing here says the site
+    # is safe — a popular domain can be compromised, and threat intel, not
+    # reputation, is what decides that.
+    try:
+        from analysis_engine.public_suffix import is_established_domain
+        if is_established_domain(d):
+            return None
+    except Exception:
+        pass
+
+    # The registrable label, i.e. "amazon" from "amazon.in". A brand operating on
+    # another TLD is still the brand — amazon.in is Amazon India, google.co.in is
+    # Google India. Comparing whole domains missed this and flagged both.
+    labels = d.split(".")
+    d_label = labels[0] if len(labels) < 3 else labels[-2 if labels[-2] not in _SLD_SUFFIXES else -3]
+
+    # Tokens of everything except the public suffix. Dropping the suffix keeps
+    # Amazon's own ".amazon" TLD from reading as the word "amazon" in someone
+    # else's domain, while still covering a brand pushed into a SUBDOMAIN of an
+    # unrelated registrable domain — "google.com.evil.tk", "paypal.com.login.ml"
+    # — which is a standard phishing shape and lives outside the label.
+    # Anything reaching here has already failed the brand-owned and
+    # same-registrable-domain checks above, so the registrant is a stranger.
+    try:
+        from analysis_engine.public_suffix import public_suffix as _ps
+        suffix = _ps(d)
+        stem = d[: -(len(suffix) + 1)] if suffix and d.endswith(suffix) and d != suffix else d
+    except Exception:
+        stem = d
+    label_tokens = set(re.split(r"[-_.]", stem))
+
     for brand in BRAND_DOMAINS:
         brand_host = brand.split(".")[0]  # e.g. "hdfcbank" from "hdfcbank.com"
-        d_host     = d.split(".")[0]
 
-        # Skip if brand is very short (too many false positives)
+        if len(brand_host) < 3:
+            continue
+
+        # Same brand on a different TLD — the label IS the brand, nothing added.
+        if d_label == brand_host:
+            return None
+
+        # A short brand as a standalone token is safe and necessary: "sbi" is
+        # three characters, so the old `len < 5` skip meant SBI — India's largest
+        # bank, and a constant phishing target — could never be detected at all,
+        # and "sbi-netbanking-verify.tk" scored nothing. As a token this is
+        # precise: SBI's real "onlinesbi.com" tokenises to {"onlinesbi"} and does
+        # not match, while "sbi-netbanking-verify" does.
+        if brand_host in label_tokens:
+            return brand
+
+        # Near-miss spelling still needs length behind it. At three characters
+        # almost every short word is within one edit of every other.
         if len(brand_host) < 5:
             continue
 
-        # Levenshtein distance ≤ 2 on the hostname part
-        if len(d_host) > 3 and _levenshtein(d_host, brand_host) <= 2:
+        # Near-miss spelling. The allowance scales with length: at a flat 2, a
+        # third of a six-letter word could differ and ordinary words collided —
+        # "moodle" vs "google", "media" vs "india", "applvn" vs "apple" are all
+        # two edits apart, and all three are real sites in the Tranco top 10,000.
+        # One edit on a short name, two once there is enough word to be sure.
+        allowed = 1 if len(brand_host) <= 6 else 2
+        if len(d_label) > 3 and _levenshtein(d_label, brand_host) <= allowed:
             return brand
 
-        # Brand name appears inside a longer domain (e.g. hdfcbank-secure.com)
-        if brand_host in d and d != brand:
+        # Brand name used as a WORD inside the label — "hdfcbank-secure",
+        # "amazon-security-alert", "microsoft-login". Requiring a token boundary
+        # is what separates those from "googledomains.com", which is Google's own
+        # registrar and where a bare substring test saw "google" and flagged it.
+        if brand_host in label_tokens:
             return brand
 
     return None
@@ -234,13 +334,33 @@ def analyze_url(url: str) -> dict:
             normalised = domain_lower
             for fake, real in homoglyphs.items():
                 normalised = normalised.replace(fake, real)
-            if normalised != domain_lower:
-                imp2 = _check_typosquatting(normalised)
-                if imp2:
+            # Only when the substitution is what created the resemblance. The
+            # AWS host s3.dualstack.us-east-1.amazonaws.com collected this flag
+            # on top of the plain typosquat flag — 35+35 — because normalising
+            # "3" and "1" elsewhere in the string left "amazon" still matching.
+            # Two flags for one observation is double-counting.
+            if normalised != domain_lower and not impersonated:
+                # Substituting the look-alikes turns the domain INTO a brand:
+                # "g00gle.com" -> "google.com". That exact landing is the whole
+                # signature of a homoglyph attack, and it used to be missed —
+                # _check_typosquatting returns None for an exact brand match, so
+                # asking it about the normalised form answered "this is Google".
+                # The near-miss path caught g00gle only by accident, at
+                # Levenshtein distance 2, and that allowance is now too tight.
+                norm_bare = normalised.removeprefix("www.")
+                if any(norm_bare == b or norm_bare.endswith("." + b) for b in BRAND_DOMAINS):
                     flag(
                         "typosquat",
-                        f"Domain uses look-alike characters to impersonate '{imp2}' (e.g. 0→o, 1→l).",
+                        f"Domain uses look-alike characters to impersonate "
+                        f"'{norm_bare}' (e.g. 0→o, 1→l).",
                     )
+                else:
+                    imp2 = _check_typosquatting(normalised)
+                    if imp2:
+                        flag(
+                            "typosquat",
+                            f"Domain uses look-alike characters to impersonate '{imp2}' (e.g. 0→o, 1→l).",
+                        )
 
         # ── Path + query analysis ──────────────────────────────────────────────
         path_query = ((parsed.path or "") + "?" + (parsed.query or "")).lower()

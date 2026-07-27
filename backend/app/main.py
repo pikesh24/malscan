@@ -45,6 +45,7 @@ try:
     )
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
+    from analysis_engine.public_suffix import public_suffix
     from analysis_engine.vt_client import get_url_report, get_file_report
     from analysis_engine.urlscan_client import scan_url as urlscan_scan
     from analysis_engine.apk_analyzer import analyze_apk
@@ -142,9 +143,25 @@ REPUTABLE_HOSTS = {
 def _host_matches(host: str, patterns: set) -> bool:
     """Exact host or a subdomain of one. Anchored to the end deliberately —
     substring matching is what made every brand subdomain look like a typosquat,
-    and here it would let `google.com.evil.tk` inherit Google's reputation."""
+    and here it would let `google.com.evil.tk` inherit Google's reputation.
+
+    Entries that are themselves public suffixes are refused. 120 of the Tranco
+    top 10,000 are shared-hosting suffixes — `github.io` at rank 115,
+    `workers.dev` at 93, `blogspot.com` at 111 — so anything built from
+    popularity will eventually contain one. Suffix-matching on `github.io` would
+    trust every page a stranger uploads there, which is precisely where phishing
+    is hosted. `raw.githubusercontent.com` stays trusted because
+    `githubusercontent.com` is a registrable domain GitHub owns, not a suffix
+    others can register under.
+    """
     host = (host or "").lower().split(":")[0]
-    return any(host == p or host.endswith("." + p) for p in patterns)
+    for p in patterns:
+        if host != p and not host.endswith("." + p):
+            continue
+        if host != p and public_suffix(p) == p:
+            continue  # p is shared hosting; a tenant under it is not p
+        return True
+    return False
 
 
 def _url_host(url: str) -> str:
@@ -335,7 +352,16 @@ def _normalize_url(url: str) -> str:
 # duplicate submissions (a double-clicked button, an app retry, a resubmit after
 # a flaky network) so one user action costs one scan's worth of external API
 # quota. Anything past the window is a genuine rescan and runs the full pipeline.
-RESULT_DEBOUNCE_SECONDS = 60
+# 5 seconds, not 60. The only thing this may collapse is a double-clicked button
+# or an app retry — a single user action that must not cost two scans' worth of
+# VirusTotal quota (4 requests/minute on the free tier).
+#
+# It must never collapse a DELIBERATE rescan. Someone who reads a verdict,
+# doubts it and presses scan again is asking a second question and has to get a
+# freshly computed answer; threat intel moves, and a stale reply to a real
+# question is the behaviour this engine exists to avoid. Sixty seconds was long
+# enough to swallow that.
+RESULT_DEBOUNCE_SECONDS = 5
 
 def _find_recent_duplicate(db, file_hash: str, exclude_job_id: str):
     """Most-recent Completed, NON-partial ScanJob with identical bytes submitted
@@ -978,17 +1004,52 @@ async def get_status(job_id: str):
 # proxy for arbitrary URLs (SSRF).
 PROXY_ALLOWED_HOSTS = {"urlscan.io"}
 
+# A screenshot is a few hundred KB. Anything beyond this is not one, and
+# resp.content would otherwise pull the whole body into memory.
+PROXY_MAX_BYTES = 8 * 1024 * 1024
+
+
 @app.get("/proxy/image")
 def proxy_image(url: str):
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in PROXY_ALLOWED_HOSTS:
         raise HTTPException(status_code=400, detail="URL not allowed")
     try:
-        resp = requests.get(url, timeout=10)
+        # allow_redirects=False is the point of this endpoint's safety. The check
+        # above validates the URL the caller supplied; requests follows redirects
+        # by default, so every hop after the first was unvalidated — an open
+        # redirect on the allowed host would have turned this into a proxy for
+        # 169.254.169.254 (cloud metadata), localhost, or anything else the
+        # server can reach. urlscan's screenshot URLs are direct, so refusing
+        # redirects outright is both safe and sufficient; if that ever changes
+        # the image visibly fails instead of quietly becoming SSRF.
+        resp = requests.get(url, timeout=10, allow_redirects=False, stream=True)
+        if resp.is_redirect or resp.is_permanent_redirect:
+            resp.close()
+            raise HTTPException(status_code=400, detail="Redirects are not followed")
         resp.raise_for_status()
+
+        # Read with a ceiling rather than resp.content, which is unbounded.
+        chunks, total = [], 0
+        for chunk in resp.iter_content(64 * 1024):
+            total += len(chunk)
+            if total > PROXY_MAX_BYTES:
+                resp.close()
+                raise HTTPException(status_code=413, detail="Image too large")
+            chunks.append(chunk)
+        resp.close()
+        body = b"".join(chunks)
+    except HTTPException:
+        raise
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Could not fetch image")
-    return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/png"))
+
+    # Never echo back an arbitrary content-type: the response is served from our
+    # own origin, so "text/html" here would be stored XSS on the app's domain.
+    ctype = (resp.headers.get("content-type") or "image/png").split(";")[0].strip().lower()
+    if not ctype.startswith("image/"):
+        ctype = "application/octet-stream"
+    return Response(content=body, media_type=ctype)
 
 
 # ── HTML Report ───────────────────────────────────────────────────────────────

@@ -2,7 +2,27 @@
   MalScan YARA Ruleset — common_threats.yar
   Covers: EICAR, PowerShell obfuscation, document exploits,
           PE packers, RATs, banking trojans, Indian threat context.
+
+  FILE-TYPE GATING
+  ----------------
+  Every rule below states which container it applies to. Without that, rules
+  written for one format match another's ordinary contents: scanning Paytm's
+  APK fired PDF_JavaScript_Exploit (the app bundles WebViews, so "/JavaScript"
+  and "unescape" appear) and PowerShell_DownloadCradle (nocase matches on
+  "downloadFile", "WebClient", "iEX(" — routine Java method and class names).
+  Two critical rules, +40 each, on a payments app used by hundreds of millions.
+
+  A rule that does not say what it applies to will eventually match everything.
 */
+
+private rule IsPDF  { condition: uint32be(0) == 0x25504446 }               // %PDF
+private rule IsZIP  { condition: uint32be(0) == 0x504B0304 }               // PK\x03\x04 — APK/JAR/OOXML
+private rule IsPE   { condition: uint16(0)   == 0x5A4D }                   // MZ
+private rule IsOLE  { condition: uint32be(0) == 0xD0CF11E0 }               // legacy .doc/.xls
+
+// Scripts and plain text: anything that is not one of the binary containers
+// above. PowerShell, batch and JavaScript droppers live here.
+private rule IsScriptOrText { condition: not IsPDF and not IsZIP and not IsPE and not IsOLE }
 
 // ── EICAR Test File ───────────────────────────────────────────────────────────
 
@@ -28,7 +48,7 @@ rule PowerShell_EncodedCommand {
         $enc3 = " -e " nocase
         $b64  = /[A-Za-z0-9+\/]{100,}={0,2}/
     condition:
-        ($enc1 or $enc2 or $enc3) and $b64
+        IsScriptOrText and (($enc1 or $enc2 or $enc3) and $b64)
 }
 
 rule PowerShell_DownloadCradle {
@@ -43,7 +63,7 @@ rule PowerShell_DownloadCradle {
         $dl5 = "IEX(" nocase
         $dl6 = "Net.WebClient" nocase
     condition:
-        2 of ($dl*)
+        IsScriptOrText and (2 of ($dl*))
 }
 
 rule PowerShell_AMSI_Bypass {
@@ -56,7 +76,7 @@ rule PowerShell_AMSI_Bypass {
         $amsi3 = "[Ref].Assembly.GetType" nocase
         $amsi4 = "System.Management.Automation.AmsiUtils" nocase
     condition:
-        any of ($amsi*)
+        IsScriptOrText and (any of ($amsi*))
 }
 
 // ── Executable in Document ────────────────────────────────────────────────────
@@ -113,7 +133,7 @@ rule PDF_JavaScript_Exploit {
         $ev2 = "unescape" nocase
         $ev3 = "String.fromCharCode" nocase
     condition:
-        ($js1 or $js2) and any of ($ev*)
+        IsPDF and (($js1 or $js2) and any of ($ev*))
 }
 
 rule PDF_AutoAction {
@@ -134,7 +154,7 @@ rule PDF_AutoAction {
         $aa2 = "/AA "
         $aa3 = "/Launch"
     condition:
-        any of ($aa*)
+        IsPDF and (any of ($aa*))
 }
 
 rule Office_AutoOpen_Macro {
@@ -150,7 +170,7 @@ rule Office_AutoOpen_Macro {
         $wscr  = "WScript"         nocase
         $cobj  = "CreateObject"    nocase
     condition:
-        any of ($auto*) and any of ($shell, $wscr, $cobj)
+        (IsZIP or IsOLE) and (any of ($auto*) and any of ($shell, $wscr, $cobj))
 }
 
 rule Office_DDE_Exploit {
@@ -163,7 +183,7 @@ rule Office_DDE_Exploit {
         $cmd  = "cmd"     nocase
         $ps   = "powershell" nocase
     condition:
-        ($dde1 or $dde2) and ($cmd or $ps)
+        (IsZIP or IsOLE) and (($dde1 or $dde2) and ($cmd or $ps))
 }
 
 // ── Suspicious Network Activity ───────────────────────────────────────────────
@@ -224,7 +244,7 @@ rule Generic_RAT_Strings {
         $reverse = "reverse_shell"   nocase
         $cmd     = "execute_command" nocase
     condition:
-        3 of them
+        (IsPE or IsScriptOrText) and (3 of them)
 }
 
 rule Njrat_Indicators {
@@ -238,7 +258,7 @@ rule Njrat_Indicators {
         $str4 = "Microsoft\\Windows NT\\CurrentVersion\\Run" nocase
         $reg  = "\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" nocase
     condition:
-        any of ($str*) or ($reg and 1 of ($str*))
+        (IsPE or IsScriptOrText) and (any of ($str*) or ($reg and 1 of ($str*)))
 }
 
 rule AsyncRAT_Indicators {
@@ -251,7 +271,7 @@ rule AsyncRAT_Indicators {
         $s3 = "AES_decrypt"   nocase
         $s4 = "GetInstallPath" nocase
     condition:
-        2 of them
+        (IsPE or IsScriptOrText) and (2 of them)
 }
 
 // ── Banking Trojans (India-specific context) ──────────────────────────────────
@@ -264,16 +284,21 @@ rule Drinik_Banking_Trojan {
         $str1 = "iAssist"          nocase
         $str2 = "drinikapk"        nocase
         $str3 = "incometax.gov"    nocase
-        $str4 = "income_tax"       nocase
-        $sbi  = "sbi"              nocase
-        $acc  = "accessibilityservice" nocase
     condition:
         // "iAssist" alone matched Microsoft's ShellAppRuntime.exe — it occurs
         // inside ordinary identifiers such as "UIAssistant". A 7-character
         // nocase substring is not an identification, so it now needs the
         // accessibility-service indicator alongside it. "drinikapk" is specific
         // enough to stand on its own.
-        $str2 or ($str1 and $acc) or ($str3 and $acc) or ($sbi and $acc and $str4)
+        // Fired on Paytm via ($str3 and $acc): the app pays income tax, so it
+        // contains "incometax.gov", and "AccessibilityService" is a standard
+        // Android API name present in essentially every large app — an SDK
+        // reference, not an intent. $sbi is three characters and matches inside
+        // arbitrary words. None of those identify a family.
+        //
+        // What is left actually names Drinik: its package string, or its app
+        // name together with the tax portal it impersonates.
+        IsZIP and ($str2 or ($str1 and $str3))
 }
 
 rule FakeCalls_Banking_App {
@@ -284,9 +309,6 @@ rule FakeCalls_Banking_App {
         $hana  = "hanaBankServiceCode" nocase
         $call  = "FakeCall"            nocase
         $bank  = "bankCallService"     nocase
-        $hdfc  = "hdfcbank"            nocase
-        $icici = "icicibank"           nocase
-        $axis  = "axisbank"            nocase
     condition:
         // $icici was declared and never referenced, which YARA treats as a
         // compile ERROR — it took the whole rule file down with it, so all 21
@@ -294,7 +316,19 @@ rule FakeCalls_Banking_App {
         // Referencing two different banks is the signal: an app naming several
         // banks is impersonating customer care, whereas an app naming one is
         // usually that bank's own app.
-        $hana or $call or $bank or 2 of ($hdfc, $icici, $axis)
+        // The bank-name branch is gone. Paytm matched all three — "hdfcbank",
+        // "icicibank", "axisbank" — because a payments app lists every bank it
+        // supports for account linking. So does every UPI app, and so does each
+        // bank's own app. A list of bank names is what legitimate financial
+        // software looks like; it says nothing about impersonation.
+        //
+        // (This branch was mine: fixing an unreferenced-string compile error I
+        // widened "$hdfc and $axis" to "2 of three". The original would have
+        // flagged Paytm too — I made a bad condition slightly worse.)
+        //
+        // The FakeCalls-specific service strings remain, and those do identify
+        // the family.
+        IsZIP and ($hana or $call or $bank)
 }
 
 rule Generic_Banking_Overlay {
@@ -310,7 +344,7 @@ rule Generic_Banking_Overlay {
         $bank3    = "UPI"
         $bank4    = "BHIM"
     condition:
-        ($overlay1 and $overlay3) or ($overlay2 and ($bank1 or $bank2 or $bank3 or $bank4))
+        IsZIP and (($overlay1 and $overlay3) or ($overlay2 and ($bank1 or $bank2 or $bank3 or $bank4)))
 }
 
 // ── Ransomware Indicators ─────────────────────────────────────────────────────
@@ -360,7 +394,7 @@ rule File_Encryption_API {
         $walk1 = "FindFirstFile"   nocase
         $walk2 = "FindNextFile"    nocase
     condition:
-        any of ($enc*) and any of ($del*) and all of ($walk*)
+        IsPE and (any of ($enc*) and any of ($del*) and all of ($walk*))
 }
 
 // ── Packer / Obfuscation Indicators ──────────────────────────────────────────
@@ -377,5 +411,5 @@ rule Suspicious_Section_Names {
         $petite = ".petite"
         $fsg    = ".FSG"
     condition:
-        any of them
+        IsPE and (any of them)
 }

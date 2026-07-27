@@ -93,6 +93,34 @@ SUSPICIOUS_ASNS = BULLETPROOF_ASNS | BUDGET_HOSTING_ASNS  # kept for _build_grap
 # _check_geoip for the measurement behind the low weight.
 HIGH_RISK_COUNTRIES = {"RU", "KP", "CN", "IR", "BY", "SY"}
 
+# Anycast CDNs and reverse proxies. An IP behind one of these resolves to
+# whichever edge node happens to be nearest the lookup, so the "country" is where
+# the CDN answered from — not where the site is hosted.
+#
+# Measured on 237 real popular sites: Canada was the most common country in the
+# whole sample at 71, of which 63 were AS13335 (Cloudflare) and 6 AS54113
+# (Fastly). None of those sites are Canadian. The report had been stating a
+# location it could not know, including for an Indian bank.
+ANYCAST_ASNS = {
+    "AS13335":  "Cloudflare",
+    "AS54113":  "Fastly",
+    "AS16509":  "AWS CloudFront",
+    "AS20940":  "Akamai",
+    "AS16625":  "Akamai",
+    "AS15133":  "Edgecast",
+    "AS8075":   "Microsoft Azure Front Door",
+    "AS13414":  "Twitter",
+    "AS54994":  "QUANTIL/CDNetworks",
+    "AS139057": "Cloudflare (APAC)",
+}
+
+
+def _anycast_provider(asn_raw: str) -> Optional[str]:
+    """The CDN name when an ASN is anycast, else None."""
+    if not asn_raw:
+        return None
+    return ANYCAST_ASNS.get(asn_raw.split()[0].upper())
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -349,6 +377,16 @@ def _check_geoip(geoip):
     cc = (geoip.get("countryCode") or geoip.get("country_code") or "").upper()
     asn_raw = (geoip.get("asn") or geoip.get("as") or "")
     isp = (geoip.get("isp") or "").lower()
+
+    # Behind an anycast CDN the country field describes an edge node, so it is
+    # not evidence of anything and must not be stated as the host's location.
+    cdn = _anycast_provider(asn_raw)
+    if cdn:
+        reasons.append(
+            f"Served through {cdn}, so the origin server's location and hosting are "
+            f"hidden — the geolocation shown is the nearest {cdn} edge, not the host."
+        )
+        return score, reasons
 
     if cc in HIGH_RISK_COUNTRIES:
         score += 5
@@ -791,10 +829,25 @@ def calculate_score(analysis_data: dict) -> dict:
         artifact_total += tf_score
     elif submitted_url:
         artifact_total += tf_score
-    # URLhaus and AbuseIPDB match URLs and IPs; those are the artifact only when
-    # a URL was what got submitted.
+
+    # URLhaus matches an EXACT URL, so a hit is a statement about that precise
+    # resource rather than about its neighbourhood — strong enough to count as
+    # artifact evidence even when the URL was merely found inside a file.
+    #
+    # Without this, a text file whose entire content was a confirmed
+    # malware-distribution URL scored 69/Suspicious, and the capping message told
+    # the user the evidence concerned "an indicator it merely references". The
+    # link was the point of the file. Under-warning on a forwarded scam message
+    # is the failure this engine exists to avoid.
+    #
+    # AbuseIPDB stays contextual: it reports an address's abuse history, which
+    # describes infrastructure rather than this artifact. ThreatFox on a
+    # domain/IP likewise — that fuzziness is what produced the original
+    # false positive this cap was written for (a 50%-confidence hit on an
+    # incidental example.com).
+    artifact_total += uh_score
     if submitted_url:
-        artifact_total += uh_score + ab_score
+        artifact_total += ab_score
 
     # ── Tier 3: Document-specific threats ─────────────────────────────────────
     # Structure read out of the submitted file itself — artifact evidence.
@@ -941,6 +994,9 @@ def calculate_score(analysis_data: dict) -> dict:
             "country":         geoip.get("country"),
             "country_code":    (geoip.get("countryCode") or geoip.get("country_code")),
             "hosting":         geoip.get("isp"),
+            # Lets the report label the map honestly instead of asserting a
+            # country it cannot know for a CDN-fronted site.
+            "anycast_cdn":     _anycast_provider(geoip.get("asn") or geoip.get("as") or ""),
             "lat":             geoip.get("lat"),
             "lon":             geoip.get("lon"),
             "city":            geoip.get("city"),
