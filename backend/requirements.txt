@@ -3,8 +3,17 @@ uvicorn==0.30.1
 sqlalchemy==2.0.31
 # Postgres driver for cloud deploys (MALSCAN_DB_URL=postgresql://...);
 # harmless locally where the SQLite default is used instead.
-# 2.9.10+ required — earlier versions ship no Python 3.13 wheels.
-# psycopg2-binary==2.9.10
+#
+# Re-enabled. It was commented out to get a failing Render build past pip, but
+# the driver is what SQLAlchemy needs to open a postgresql:// URL at all — so
+# removing it only moved the failure from build time to startup, which is the
+# "ModuleNotFoundError: No module named 'psycopg2'" the service died on.
+#
+# The real cause was the interpreter: Render defaulted to Python 3.14, which has
+# no manylinux wheel for this version (cp38-cp313 only), so pip installed
+# nothing. Python is now pinned to 3.13 in .python-version and render.yaml,
+# where every dependency has a wheel.
+psycopg2-binary==2.9.10
 python-multipart==0.0.18
 python-dotenv==1.1.0
 requests==2.32.3
