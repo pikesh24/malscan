@@ -28,9 +28,13 @@ pefile==2024.8.26
 # archive is still hashed and top-level scanned (same pattern as optional YARA).
 rarfile==4.3
 playwright==1.60.0
-# After installing, also run: playwright install chromium
-# (headless Chromium used to render the HTML report to a real PDF — see
-# GET /report/{job_id}/pdf in main.py)
+# Renders the HTML report to a real PDF — see GET /report/{job_id}/pdf in
+# main.py. This package is the client; the browser it drives comes from one of
+# two places:
+#   locally  — run `playwright install chromium` once to get a real binary.
+#   deployed — set BROWSERLESS_WS_URL to a hosted browser's CDP endpoint and
+#              nothing is installed at all (Render's free tier cannot spare the
+#              disk or RAM). The pip package alone is enough on that path.
 
 # Threat intelligence (abuse.ch feeds — no key required)
 # MalwareBazaar, ThreatFox, URLhaus clients use requests (already listed above)
