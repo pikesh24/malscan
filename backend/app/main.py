@@ -184,6 +184,30 @@ def _url_host(url: str) -> str:
         return ""
 
 
+# Certificate-distribution endpoints: the revocation lists, OCSP responders and
+# CA certificates that Authenticode embeds in EVERY code-signed binary
+# (crl3.digicert.com/…crl, ocsp.digicert.com, cacerts.digicert.com/…crt). They
+# state who signed the file, not what it communicates with — but they were
+# extracted as network indicators, so a *properly code-signed* executable
+# reported ~19 embedded URLs and was scored for the volume. Signing correctly
+# made a file look worse.
+#
+# Matched by shape rather than by a domain allow-list, deliberately: the hosts
+# arrive with trailing DER bytes glued on ("ocsp.digicert.com0", "…RootCA.crt0E")
+# so exact-domain matching misses them. This is narrower than "reputable host" —
+# a payload hosted on a legitimate domain is still reported, which is a
+# distinction the surrounding code already protects.
+_CERT_HOST_RE = re.compile(r"^https?://(?:ocsp|crl\d*|cacerts?|pki|certs?)[.\-]", re.I)
+_CERT_PATH_RE = re.compile(r"\.(?:crl|crt|cer|p7[bc])", re.I)
+
+
+def _is_certificate_infrastructure(url: str) -> bool:
+    """True for a code-signing certificate/revocation endpoint."""
+    if not url:
+        return False
+    return bool(_CERT_HOST_RE.match(url)) or bool(_CERT_PATH_RE.search(url))
+
+
 def _is_namespace_identifier(value: str) -> bool:
     """Boilerplate with nothing behind it — safe to delete from the report."""
     return _host_matches(_url_host(value) or value, NAMESPACE_IDENTIFIERS)
@@ -264,7 +288,9 @@ def _strip_safe_indicators(iocs: dict, keep: str = None) -> None:
     # reports that claimed "no network indicators extracted" when there were some.
     # They simply do not attract threat-intel lookups or scoring — see
     # _is_suppressible_indicator.
-    iocs["urls"]    = [u for u in (iocs.get("urls") or [])    if u in keep_set or not _is_namespace_identifier(u)]
+    iocs["urls"]    = [u for u in (iocs.get("urls") or [])
+                       if u in keep_set or (not _is_namespace_identifier(u)
+                                            and not _is_certificate_infrastructure(u))]
     iocs["domains"] = [d for d in (iocs.get("domains") or []) if d in keep_set or not _is_namespace_identifier(d)]
     # Loopback/unspecified addresses live in NAMESPACE_IDENTIFIERS — defence in
     # depth alongside is_reportable_ip at extraction time.
@@ -1139,9 +1165,22 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 return True
             return (res.get("vt_status") or res.get("status")) in ("queued", "pending", "error")
 
+        # Scoped to the lookup that describes THE ARTIFACT: vt_file for an upload,
+        # vt_url for a submitted URL. A VT lookup on a URL merely *embedded* in a
+        # file describes an indicator, not the thing submitted — the same
+        # distinction artifact_total draws in scoring.
+        #
+        # Conflating them had a sharp edge. A binary's string table yields hosts
+        # that never resolve (adjacent symbols run together, certificate blobs
+        # leave trailing bytes), so that lookup routinely fails on a perfectly
+        # ordinary executable. Marking the whole scan partial then vetoed the
+        # benign-consensus dampening — and a signed installer that 62 VirusTotal
+        # engines agreed was clean scored 73/100 because one junk string pulled
+        # out of it did not resolve.
+        _verdict_critical = ("vt_url",) if submitted_url else ("vt_file",)
         intel_partial = any(
             key in futures and _intel_incomplete(osint_results.get(key))
-            for key in ("vt_file", "vt_url")
+            for key in _verdict_critical
         )
 
         # ── 3. Build analysis_data for scoring ───────────────────────────────

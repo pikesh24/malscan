@@ -362,6 +362,91 @@ def test_submitted_safe_domain_is_kept_as_an_indicator(client):
         "submitted domain was stripped from its own report"
 
 
+# ── Ordinary signed software must not look malicious ──────────────────────────
+# All three of these came from one real report: Claude_Setup.exe, a legitimately
+# signed installer that 62 VirusTotal engines agreed was clean, scored 73/100 and
+# was presented as a "High Confidence Threat".
+
+def test_code_signing_urls_are_not_treated_as_indicators(client):
+    """Authenticode embeds the signer's CRL/OCSP/CA endpoints in EVERY signed
+    binary. They record who signed the file, not what it communicates with — but
+    they were extracted as network indicators, so signing a release properly
+    raised its IOC volume and therefore its score. The trailing bytes are real:
+    DER structure bleeds into the extracted string."""
+    body = (b"http://crl3.digicert.com/DigiCertTrustedRootG4.crl0 "
+            b"http://ocsp.digicert.com0 "
+            b"http://cacerts.digicert.com/DigiCertTrustedRootG4.crt0C "
+            b"http://real-payload.example/stage2.bin")
+    job_id = _upload(client, body, "signed.bin").json()["job_id"]
+    urls = " ".join(client.get(f"/status/{job_id}").json()["results"]["indicators"]["urls"])
+
+    assert "digicert" not in urls, f"certificate-chain URLs became indicators: {urls}"
+    assert "real-payload.example" in urls, "stripping cert URLs also removed a genuine indicator"
+
+
+def test_failed_lookup_on_an_embedded_url_does_not_make_the_scan_partial(client, monkeypatch):
+    """VirusTotal is verdict-critical for the ARTIFACT, not for every string in it.
+
+    A binary's string table yields hosts that never resolve (adjacent symbols run
+    together, certificate blobs leave trailing bytes), so the lookup on an
+    embedded URL fails routinely on perfectly ordinary software. Treating that as
+    an incomplete scan marked the result provisional AND vetoed the benign-
+    consensus dampening — so a clean verdict on the file was discarded because a
+    junk string extracted from it did not resolve.
+    """
+    monkeypatch.setenv("VT_API_KEY", "test-key")
+    monkeypatch.setattr(app_main, "get_url_report",
+                        lambda *a, **k: {"error": "VT request timed out.", "vt_status": "error"})
+    monkeypatch.setattr(app_main, "get_file_report",
+                        lambda *a, **k: {"stats": {"malicious": 0, "suspicious": 0,
+                                                   "harmless": 8, "undetected": 60},
+                                         "vt_status": "found"})
+
+    res = _upload(client, b"ordinary program referencing http://embedded-junk.example/x", "app.bin")
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+
+    assert results.get("partial") is not True, \
+        "a failed lookup on an EMBEDDED url marked the artifact's own scan partial"
+
+
+# ── Rescanning the same executable ────────────────────────────────────────────
+
+def _interpreter_is_pe() -> bool:
+    try:
+        with open(os.sys.executable, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _interpreter_is_pe(), reason="no PE binary available on this platform")
+def test_the_same_executable_can_be_scanned_twice(client, monkeypatch):
+    """End-to-end guarantee that a PE can be resubmitted and rescanned.
+
+    Analysing a PE used to leave it memory-mapped by the scanning process, so a
+    second submission could not rewrite the vault copy: HTTP 500 from /upload,
+    raised before any job row existed. Found in the wild on Claude_Setup.exe.
+
+    Note this test does NOT reliably reproduce that bug — under TestClient the
+    background task runs inline and the mapping is released before the second
+    upload, so it passed even against the broken code. The actual regression
+    guard is test_analyzing_a_pe_leaves_the_file_writable, which was confirmed
+    to fail without the fix. This one stands guard over the product-level
+    promise instead: rescanning is deliberate design (there is no result cache),
+    so the debounce is disabled to force a genuine second pass.
+    """
+    monkeypatch.setattr(app_main, "RESULT_DEBOUNCE_SECONDS", 0)
+    with open(os.sys.executable, "rb") as f:
+        pe_bytes = f.read()
+
+    first = _upload(client, pe_bytes, "setup.exe")
+    assert first.status_code == 200, first.text[:300]
+
+    second = _upload(client, pe_bytes, "setup.exe")
+    assert second.status_code == 200, f"re-scanning the same PE failed: {second.text[:300]}"
+    assert client.get(f"/status/{second.json()['job_id']}").json()["status"] == "Completed"
+
+
 # ── PDF export ────────────────────────────────────────────────────────────────
 
 @pytest.mark.skipif(importlib.util.find_spec("playwright") is None,

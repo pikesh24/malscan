@@ -20,6 +20,16 @@ MALWARE_KEYWORDS = {
     "obfuscate", "encode", "base64", "powershell",
 }
 
+# The subset of the above that names an ordinary infrastructure function as well
+# as a malware capability. In a HOSTNAME these carry almost no signal — vendors
+# name distribution hosts exactly this way (downloads.claude.ai,
+# download.mozilla.org, downloads.apache.org, cdn.…/loader.js) — so they are
+# scored as a weak flag rather than at full keyword weight. In a path they were
+# already treated as ordinary; this applies the same judgement to the domain.
+INFRASTRUCTURE_KEYWORDS = {
+    "download", "downloader", "loader", "encode", "base64", "powershell",
+}
+
 # ── Suspicious TLDs (commonly abused for malware, phishing, spam) ─────────────
 
 SUSPICIOUS_TLDS = {
@@ -237,6 +247,7 @@ FLAG_WEIGHTS = {
     # inflating either half.
     "http_executable": 15,
     "keyword_domain": 15,
+    "keyword_domain_weak": 5,   # "downloads.<vendor>" is a distribution host, not a threat
     "long_domain":    10,
     "deep_subdomain": 10,   # legitimate multi-level CDN hosts do this too
     "shortener":      10,   # hides the destination; not evidence of malice
@@ -324,9 +335,20 @@ def analyze_url(url: str) -> dict:
                 flag("long_domain", "Excessively long domain name — may be generated or obfuscated.")
 
             # ── Malware keywords in domain ─────────────────────────────────────
+            # Split by how much the word actually discriminates. "trojan" or
+            # "phishing" in a hostname is genuinely odd; "download" is how nearly
+            # every vendor names a distribution host — downloads.claude.ai,
+            # download.mozilla.org, downloads.apache.org. Scoring those the same
+            # made being a normal software publisher look suspicious, which is
+            # the same conclusion that already put keyword_path at 5.
             for kw in MALWARE_KEYWORDS:
                 if kw in domain_lower:
-                    flag("keyword_domain", f"Threat-related keyword '{kw}' in domain name.")
+                    weak = kw in INFRASTRUCTURE_KEYWORDS
+                    flag(
+                        "keyword_domain_weak" if weak else "keyword_domain",
+                        f"Threat-related keyword '{kw}' in domain name."
+                        + (" (common in legitimate distribution hosts.)" if weak else ""),
+                    )
                     break
 
             # ── Homoglyph substitution heuristic ──────────────────────────────

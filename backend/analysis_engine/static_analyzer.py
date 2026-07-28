@@ -316,7 +316,15 @@ def analyze_pe(file_path: str, data: bytes = None) -> dict:
     if raw and raw[:2] == b"MZ":
         try:
             import pefile
-            pe = pefile.PE(file_path)
+            # Parse the bytes already in hand rather than the path. Given a path,
+            # pefile memory-maps the file and only releases it on close() — which
+            # is never called here, so the scanning process kept every PE it
+            # examined locked for its own lifetime. The vault copy of that
+            # executable could then no longer be overwritten, so re-submitting
+            # the same PE died on the vault write with a 500 *before* a job row
+            # was created (no job, no error in the UI), and only a restart
+            # cleared it. Rescanning is a core guarantee, so this has to hold.
+            pe = pefile.PE(data=raw)
             results["is_pe"]    = True
             results["imphash"]  = pe.get_imphash()
 

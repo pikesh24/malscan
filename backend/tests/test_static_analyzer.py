@@ -1,7 +1,11 @@
 """Unit tests for analysis_engine/static_analyzer.py."""
 
 import os
+import shutil
+import sys
 import tempfile
+
+import pytest
 
 from analysis_engine.static_analyzer import (
     extract_iocs, analyze_pe, is_reportable_ip, is_reportable_url,
@@ -13,6 +17,43 @@ def _write_temp(content: bytes) -> str:
     with os.fdopen(fd, "wb") as f:
         f.write(content)
     return path
+
+
+def _have_real_pe() -> bool:
+    """A genuine PE is needed to exercise pefile at all; the interpreter is one
+    on Windows. Elsewhere there is nothing to parse and nothing to lock."""
+    try:
+        with open(sys.executable, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _have_real_pe(), reason="no PE binary available on this platform")
+def test_analyzing_a_pe_leaves_the_file_writable(tmp_path):
+    """pefile memory-maps a file it opens by path and only releases it on
+    close(), which this never called — so the scanning process held every
+    executable it examined open for its own lifetime.
+
+    The artifact lives in the vault under its hash, so re-submitting the same PE
+    tried to rewrite a file the server itself had locked: the upload died on the
+    vault write with a 500 *before* the job row was created, meaning no job, no
+    stored error, and nothing in the UI but a failure. Only a restart cleared it.
+    Rescanning is a deliberate guarantee of this design (there is no result
+    cache), so an artifact that can only ever be scanned once is a real break.
+
+    Windows enforces this with a sharing violation; POSIX allows overwriting a
+    mapped file, so there the assertion below is a cheap invariant rather than a
+    reproduction.
+    """
+    target = tmp_path / "sample.exe"
+    shutil.copy(sys.executable, target)
+
+    result = analyze_pe(str(target))
+    assert result["is_pe"], "fixture was not parsed as a PE — this would prove nothing"
+
+    with open(target, "wb") as f:      # raises OSError if still mapped
+        f.write(b"overwritten")
 
 
 def test_extract_iocs_finds_ips_and_urls():

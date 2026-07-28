@@ -147,3 +147,33 @@ def test_indian_brand_lookalikes_are_caught(url):
     model. Short brands are now matched as tokens, which is precise enough."""
     assert "impersonate" in " ".join(_au(url)["suspicious_flags"]).lower(), url
     assert _score(url) >= 35
+
+
+# ── Distribution hostnames vs. genuine threat vocabulary ──────────────────────
+
+def _keyword_weight(url: str, needle: str):
+    """Weight attached to the domain-keyword flag mentioning `needle`, or None."""
+    r = analyze_url(url)
+    for flag, weight in zip(r["suspicious_flags"], r["flag_weights"]):
+        if needle in flag.lower() and "domain name" in flag.lower():
+            return weight
+    return None
+
+
+def test_vendor_distribution_host_is_a_weak_signal():
+    """"downloads.<vendor>" is how software is published, not evidence of malice.
+
+    downloads.claude.ai, download.mozilla.org and downloads.apache.org all carry
+    this word. Scored at full keyword weight it put 15 points on any legitimate
+    publisher — part of what pushed a signed installer to 73/100. The path form
+    was already treated as ordinary ("keyword_path": 5); this is the same
+    judgement applied to the hostname.
+    """
+    assert _keyword_weight("https://downloads.claude.ai/app/setup", "download") == 5
+
+
+def test_genuine_threat_keyword_in_a_domain_still_scores_fully():
+    """The other half: dropping the weight for infrastructure words must not
+    disarm the flag for vocabulary that really is discriminating."""
+    assert _keyword_weight("http://trojan-host.example/x", "trojan") == 15
+    assert _keyword_weight("http://phishing-login.example/x", "phish") == 15
