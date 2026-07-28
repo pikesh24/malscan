@@ -306,23 +306,31 @@ def analyze_pe(file_path: str, data: bytes = None) -> dict:
     results["magic_type"]    = type_info.get("magic_type", "Unknown")
     results["type_mismatch"] = type_info.get("type_mismatch", False)
 
-    try:
-        import pefile
-        pe = pefile.PE(file_path)
-        results["is_pe"]    = True
-        results["imphash"]  = pe.get_imphash()
+    # Only attempt a PE parse when the bytes actually claim to be one. pefile
+    # runs a full gc.collect() when it closes EVERY instance, which costs ~160 ms
+    # inside this process (compiled YARA rules, ORM and framework all sit on the
+    # heap it walks) versus ~7 ms in an empty one. On a non-PE that parse was
+    # always going to fail, so the cost bought nothing — and once every archive
+    # member goes through here it was 97% of the time spent scanning an archive.
+    # A PE must start with MZ; this is the same gate the YARA ruleset uses.
+    if raw and raw[:2] == b"MZ":
+        try:
+            import pefile
+            pe = pefile.PE(file_path)
+            results["is_pe"]    = True
+            results["imphash"]  = pe.get_imphash()
 
-        for section in pe.sections:
-            name    = section.Name.decode("utf-8", errors="ignore").strip("\x00")
-            entropy = round(section.get_entropy(), 3)
-            results["pe_sections"].append({"name": name, "entropy": entropy})
-            if entropy > 7.5:
-                results["suspicious_sections"].append({
-                    "name":   name,
-                    "reason": f"High entropy ({entropy:.2f}) — suggests packing or encryption.",
-                })
+            for section in pe.sections:
+                name    = section.Name.decode("utf-8", errors="ignore").strip("\x00")
+                entropy = round(section.get_entropy(), 3)
+                results["pe_sections"].append({"name": name, "entropy": entropy})
+                if entropy > 7.5:
+                    results["suspicious_sections"].append({
+                        "name":   name,
+                        "reason": f"High entropy ({entropy:.2f}) — suggests packing or encryption.",
+                    })
 
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return results

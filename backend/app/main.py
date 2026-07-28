@@ -15,8 +15,13 @@ import requests
 
 # ── Safety limits ─────────────────────────────────────────────────────────────
 MAX_UPLOAD_BYTES      = 50  * 1024 * 1024   # 50 MB hard cap
+# Budgets for the WHOLE archive tree, not per archive — see _new_archive_scan().
 MAX_DECOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB total decompressed
-MAX_ZIP_FILE_COUNT    = 500                  # files inside a ZIP
+MAX_ZIP_FILE_COUNT    = 500                  # files extracted across all nesting
+MAX_ARCHIVE_DEPTH     = 3                    # archive layers opened (zip-in-zip-in-zip)
+MAX_INNER_INTEL_LOOKUPS = 8                  # rate-limited hash lookups on members
+MAX_INNER_READ_BYTES  = 25 * 1024 * 1024     # hold a member in memory below this
+_ARCHIVE_COPY_CHUNK   = 1024 * 1024
 MAX_URL_LENGTH        = 2048                 # /submit-url input cap
 RATE_LIMIT_MAX        = 30                   # submissions per window per client IP
 RATE_LIMIT_WINDOW_S   = 60
@@ -475,6 +480,344 @@ def _member_is_dir(m) -> bool:
     return _member_name(m).endswith("/")
 
 
+# ── Per-member analysis ───────────────────────────────────────────────────────
+# Every detector that runs on the submitted artifact now also runs on each file
+# inside it. Previously only IOC extraction and PE parsing did, which meant
+# wrapping a sample in a ZIP defeated three separate engines at once: YARA saw
+# the container's DEFLATE-compressed bytes (so rules written against PE structure
+# could never match), document analysis saw "a ZIP" rather than the maldoc inside
+# it, and hash intel only ever knew the wrapper's hash. All three reported
+# success while examining the wrong bytes.
+
+def _sha256_of(path: str, data: bytes = None) -> str:
+    """SHA-256 of a member, reusing already-read bytes when the caller has them
+    and streaming from disk otherwise so a large member is never held twice."""
+    if data is not None:
+        return hashlib.sha256(data).hexdigest()
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(_ARCHIVE_COPY_CHUNK), b""):
+                h.update(chunk)
+    except Exception:
+        return ""
+    return h.hexdigest()
+
+
+def _new_archive_scan() -> dict:
+    """Accumulator threaded through an entire archive tree.
+
+    The bomb budgets (files_seen / bytes_seen) live here rather than per archive
+    deliberately: under per-archive accounting, 500 files each holding 500 files
+    is 250,000 extractions and every single one is "within limits". Nested
+    archives must spend from the same allowance as the top level.
+    """
+    return {
+        "files_seen": 0,
+        "bytes_seen": 0,
+        "truncated": None,
+        "contents": [],
+        "iocs": {"ips": [], "domains": [], "urls": []},
+        "suspicious_sections": [],
+        "suspicious_strings": [],
+        "yara_matches": [],
+        "documents": [],
+        "hash_candidates": [],
+        "unreadable": [],
+        "is_pe": False,
+        "imphash": None,
+    }
+
+
+def _copy_member_bounded(archive, member, dest_path: str, budget_left: int):
+    """Extract one member, refusing to write more than `budget_left` bytes.
+    Returns bytes written, or None if the member ran past the budget.
+
+    The declared size in an archive header is attacker-controlled — a member can
+    claim 1 KB and expand to gigabytes. Trusting that header (what this did
+    before) means the bomb is already on disk by the time the total is noticed,
+    so the copy itself is capped rather than just the prediction of it.
+    """
+    written = 0
+    with archive.open(member) as src, open(dest_path, "wb") as dst:
+        while True:
+            chunk = src.read(_ARCHIVE_COPY_CHUNK)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > budget_left:
+                return None
+            dst.write(chunk)
+    return written
+
+
+def _scan_archive_tree(file_path: str, acc: dict, depth: int = 1) -> None:
+    """Extract one archive and analyse every member, recursing into nested
+    archives up to MAX_ARCHIVE_DEPTH.
+
+    Safe against Zip Slip, decompression bombs and archive-in-archive
+    amplification. A member that cannot be read is skipped, never fatal.
+    """
+    archive, members, kind = _open_extractable_archive(file_path)
+    if archive is None:
+        return
+
+    extract_dir, extracted = None, []
+    try:
+        extract_dir = tempfile.mkdtemp(prefix="malscan_arc_")
+        real_extract_dir = os.path.realpath(extract_dir)
+
+        for member in members:
+            # ── Archive bomb: too many files (across the whole tree) ──────────
+            if acc["files_seen"] >= MAX_ZIP_FILE_COUNT:
+                acc["truncated"] = f"file limit reached ({MAX_ZIP_FILE_COUNT} files)"
+                print(f"Archive bomb blocked: more than {MAX_ZIP_FILE_COUNT} files across the archive tree")
+                break
+
+            # ── Archive bomb: decompressed size (across the whole tree) ───────
+            budget_left = MAX_DECOMPRESSED_BYTES - acc["bytes_seen"]
+            if budget_left <= 0 or _member_size(member) > budget_left:
+                acc["truncated"] = f"size limit reached ({MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB decompressed)"
+                print(f"Archive bomb blocked: decompressed size exceeds {MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB")
+                break
+
+            # ── Zip Slip protection ───────────────────────────────────────────
+            # commonpath avoids the prefix-sibling bug of a bare startswith
+            # (e.g. "/x/dir" vs "/x/dir_evil") and an absolute/other-drive
+            # member path (ValueError → outside).
+            member_name = _member_name(member)
+            member_path = os.path.realpath(os.path.join(extract_dir, member_name))
+            try:
+                inside = os.path.commonpath([real_extract_dir, member_path]) == real_extract_dir
+            except ValueError:
+                inside = False
+            if not inside:
+                print(f"Zip Slip blocked: {member_name}")
+                continue
+
+            if _member_is_dir(member):
+                os.makedirs(member_path, exist_ok=True)
+                continue
+
+            os.makedirs(os.path.dirname(member_path), exist_ok=True)
+            try:
+                written = _copy_member_bounded(archive, member, member_path, budget_left)
+            except Exception as me:
+                # A backend that can't decompress one member (e.g. an
+                # unsupported RAR compression) must not abort the scan.
+                print(f"Archive member '{member_name}' extraction failed: {me}")
+                continue
+            if written is None:
+                acc["truncated"] = f"size limit reached ({MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB decompressed)"
+                print(f"Archive bomb blocked: '{member_name}' expanded past the decompression budget")
+                try:
+                    os.remove(member_path)
+                except OSError:
+                    pass
+                break
+
+            acc["files_seen"] += 1
+            acc["bytes_seen"] += written
+            extracted.append((member_path, member_name))
+
+        # Analyse after extracting, so a member that recurses cannot disturb the
+        # iteration over this archive's own member list.
+        for member_path, member_name in extracted:
+            _analyze_archive_member(member_path, member_name, acc, depth)
+    except Exception as ze:
+        print(f"{(kind or 'archive').upper()} extraction error: {ze}")
+    finally:
+        try:
+            archive.close()
+        except Exception:
+            pass
+        # Always clean up temp extraction directory
+        if extract_dir and os.path.exists(extract_dir):
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+
+def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth: int) -> None:
+    """Run the artifact-level detectors on one extracted member and record what
+    fired on it, so a hit can name the specific file rather than just 'the archive'."""
+    try:
+        size = os.path.getsize(inner_path)
+    except OSError:
+        return
+
+    # Read once and share the bytes across analysers; stream instead when the
+    # member is big enough that holding it (plus each analyser's own copy) costs
+    # more than re-reading it.
+    #
+    # A member that extracts but cannot be read back is almost always real-time
+    # antivirus quarantining it in the gap between the two — routine on Windows
+    # precisely when an archive DOES contain malware. Left unrecorded, the most
+    # dangerous file in the archive is the one that reports nothing, and "found
+    # nothing" reads identically to "was never able to look".
+    data = None
+    try:
+        with open(inner_path, "rb") as f:
+            if size <= MAX_INNER_READ_BYTES:
+                data = f.read()
+            else:
+                f.read(1)   # touch it, so an unreadable large member fails here too
+    except OSError as e:
+        acc["unreadable"].append(display_name)
+        acc["contents"].append({
+            "name": display_name, "sha256": "", "size": size, "depth": depth,
+            "is_pe": False, "ioc_count": 0, "yara_rules": [], "doc_type": None,
+            "unreadable": type(e).__name__,
+        })
+        print(f"Archive member '{display_name}' could not be read after extraction "
+              f"({type(e).__name__}) — commonly antivirus quarantine")
+        return
+
+    inner_iocs = extract_iocs(inner_path, data=data)
+    for k in ("ips", "domains", "urls"):
+        acc["iocs"][k].extend(inner_iocs.get(k) or [])
+
+    inner_pe = analyze_pe(inner_path, data=data)
+    acc["suspicious_sections"].extend(inner_pe.get("suspicious_sections") or [])
+    if inner_pe.get("is_pe"):
+        acc["is_pe"] = True
+        acc["imphash"] = acc["imphash"] or inner_pe.get("imphash")
+
+    inner_yara = yara_scan_file(inner_path)
+    for m in (inner_yara.get("yara_matches") or []):
+        entry = dict(m)
+        entry["source_file"] = display_name
+        acc["yara_matches"].append(entry)
+
+    inner_doc = analyze_document(inner_path, display_name) or {}
+    if inner_doc.get("doc_type") not in (None, "unknown"):
+        acc["documents"].append((display_name, inner_doc))
+
+    acc["suspicious_strings"].extend(
+        analyze_suspicious_strings(inner_path, data=data).get("suspicious_strings") or []
+    )
+
+    sha = _sha256_of(inner_path, data=data)
+    acc["contents"].append({
+        "name":       display_name,
+        "sha256":     sha,
+        "size":       size,
+        "depth":      depth,
+        "is_pe":      inner_pe.get("is_pe", False),
+        "ioc_count":  len(inner_iocs.get("urls") or []) + len(inner_iocs.get("ips") or []),
+        "yara_rules": [m.get("rule") for m in (inner_yara.get("yara_matches") or [])],
+        "doc_type":   inner_doc.get("doc_type"),
+    })
+    if sha:
+        acc["hash_candidates"].append({
+            "name":   display_name,
+            "sha256": sha,
+            "is_pe":  bool(inner_pe.get("is_pe")),
+            "is_doc": inner_doc.get("doc_type") not in (None, "unknown"),
+        })
+
+    # Nested container: recurse. Bounded by MAX_ARCHIVE_DEPTH and by the shared
+    # budget above, so double-zipping neither hides a payload nor multiplies work.
+    if depth < MAX_ARCHIVE_DEPTH:
+        _scan_archive_tree(inner_path, acc, depth + 1)
+
+
+def _merge_unique(base, extra) -> list:
+    """Order-preserving union. Suspicious strings score +8 each for the first
+    five, so twenty copies of one flag from twenty identical members would
+    otherwise crowd every other signal out of the window."""
+    out = list(base or [])
+    for item in extra or []:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _merge_yara_matches(container: dict, inner: list) -> dict:
+    """Fold member matches into the container's YARA result.
+
+    Deduplicated by rule: scoring charges 40 per critical match, so one rule
+    firing on twenty copies of the same payload would read as twenty times the
+    evidence. The member names move onto the surviving match instead, so the
+    report can still say which files it hit.
+    """
+    merged = list(container.get("yara_matches") or [])
+    by_rule = {m.get("rule"): m for m in merged}
+    for m in inner or []:
+        rule, src = m.get("rule"), m.get("source_file")
+        existing = by_rule.get(rule)
+        if existing is None:
+            entry = dict(m)
+            entry.pop("source_file", None)
+            entry["source_files"] = [src] if src else []
+            merged.append(entry)
+            by_rule[rule] = entry
+        elif src:
+            existing.setdefault("source_files", [])
+            if src not in existing["source_files"]:
+                existing["source_files"].append(src)
+    container["yara_matches"] = merged
+    container["match_count"] = len(merged)
+    return container
+
+
+def _document_threat_rank(doc: dict) -> tuple:
+    """Order document findings by the signals scoring.py actually charges for.
+
+    _check_document_threats takes ONE document dict, so an archive holding
+    several has to nominate its worst; ranking on the same flags keeps that
+    choice aligned with what the scorer would have charged for each.
+    """
+    if not doc or doc.get("doc_type") in (None, "unknown"):
+        return (0, 0, 0, 0, 0, 0, 0)
+    return (
+        int(bool(doc.get("has_launch_action"))),
+        int(bool(doc.get("has_js_auto_combo"))),
+        int(bool(doc.get("has_macros"))),
+        len(doc.get("suspicious_macro_keywords") or []),
+        int(bool(doc.get("has_embedded_files"))),
+        int(bool(doc.get("has_javascript"))),
+        int(bool(doc.get("has_auto_action"))),
+    )
+
+
+def _promote_archive_document(container_doc: dict, acc: dict) -> dict:
+    """Let an archive's most dangerous member stand in as *the* document.
+
+    A ZIP is not a document, so analyze_document on the container finds nothing —
+    which is precisely how a maldoc inside a ZIP scored zero for document threats.
+    """
+    docs = acc.get("documents") or []
+    if not docs:
+        return container_doc
+    name, worst = max(docs, key=lambda nd: _document_threat_rank(nd[1]))
+    if _document_threat_rank(worst) <= _document_threat_rank(container_doc or {}):
+        return container_doc
+    promoted = dict(worst)
+    promoted["source_file"] = name
+    return promoted
+
+
+def _select_inner_intel_targets(acc: dict, limit: int) -> list:
+    """Which member hashes are worth spending a rate-limited lookup on.
+
+    Executables first, then documents (what MalwareBazaar actually indexes), then
+    everything else — deduplicated by hash and capped, so a 500-file archive
+    cannot turn into 500 abuse.ch requests.
+    """
+    ranked = sorted(
+        acc.get("hash_candidates") or [],
+        key=lambda c: (0 if c["is_pe"] else 1 if c["is_doc"] else 2),
+    )
+    seen, targets = set(), []
+    for c in ranked:
+        if c["sha256"] in seen:
+            continue
+        seen.add(c["sha256"])
+        targets.append(c)
+        if len(targets) >= limit:
+            break
+    return targets
+
+
 _osint_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="osint")
 init_db()
 
@@ -533,84 +876,23 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         iocs    = extract_iocs(file_path, data=raw_bytes)
         pe_info = analyze_pe(file_path, data=raw_bytes)
         apk_info = {}
-        archive_contents = []
 
-        # ── 1b. Archive Extraction — ZIP + RAR (Zip-Slip / bomb safe) ─────────
-        # APKs are ZIPs too but are handled by apk_analyzer, so exclude them here.
-        archive, members, arc_kind = (None, None, None)
-        if not original_filename.lower().endswith(".apk"):
-            archive, members, arc_kind = _open_extractable_archive(file_path)
-        if archive is not None:
-            extract_dir = None
-            try:
-                extract_dir = tempfile.mkdtemp(prefix="malscan_arc_")
-
-                # ── Archive bomb: too many files ──────────────────────────────
-                if len(members) > MAX_ZIP_FILE_COUNT:
-                    print(f"Archive bomb blocked: {len(members)} files exceeds limit of {MAX_ZIP_FILE_COUNT}")
-                    members = members[:MAX_ZIP_FILE_COUNT]
-
-                total_decompressed = 0
-                for member in members:
-                    # ── Archive bomb: decompressed size limit ─────────────────
-                    total_decompressed += _member_size(member)
-                    if total_decompressed > MAX_DECOMPRESSED_BYTES:
-                        print(f"Archive bomb blocked: decompressed size exceeds {MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB")
-                        break
-
-                    # ── Zip Slip protection ───────────────────────────────────
-                    # commonpath avoids the prefix-sibling bug of a bare
-                    # startswith (e.g. "/x/dir" vs "/x/dir_evil") and an
-                    # absolute/other-drive member path (ValueError → outside).
-                    member_name = _member_name(member)
-                    real_extract_dir = os.path.realpath(extract_dir)
-                    member_path = os.path.realpath(os.path.join(extract_dir, member_name))
-                    try:
-                        inside = os.path.commonpath([real_extract_dir, member_path]) == real_extract_dir
-                    except ValueError:
-                        inside = False
-                    if not inside:
-                        print(f"Zip Slip blocked: {member_name}")
-                        continue
-                    if _member_is_dir(member):
-                        os.makedirs(member_path, exist_ok=True)
-                        continue
-                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
-                    try:
-                        with archive.open(member) as src, open(member_path, "wb") as dst:
-                            dst.write(src.read())
-                    except Exception as me:
-                        # A backend that can't decompress one member (e.g. an
-                        # unsupported RAR compression) must not abort the scan.
-                        print(f"Archive member '{member_name}' extraction failed: {me}")
-                        continue
-
-                for root, dirs, files in os.walk(extract_dir):
-                    for fname in files:
-                        inner_path = os.path.join(root, fname)
-                        inner_iocs = extract_iocs(inner_path)
-                        inner_pe   = analyze_pe(inner_path)
-                        for k in ("ips", "domains", "urls"):
-                            iocs[k] = list(set(iocs.get(k, []) + inner_iocs.get(k, [])))
-                        pe_info["suspicious_sections"].extend(inner_pe.get("suspicious_sections", []))
-                        if inner_pe.get("is_pe"):
-                            pe_info["is_pe"] = True
-                            pe_info["imphash"] = pe_info.get("imphash") or inner_pe.get("imphash")
-                        archive_contents.append({
-                            "name": fname,
-                            "is_pe": inner_pe.get("is_pe", False),
-                            "ioc_count": len(inner_iocs.get("urls", [])) + len(inner_iocs.get("ips", [])),
-                        })
-            except Exception as ze:
-                print(f"{(arc_kind or 'archive').upper()} extraction error: {ze}")
-            finally:
-                try:
-                    archive.close()
-                except Exception:
-                    pass
-                # Always clean up temp extraction directory
-                if extract_dir and os.path.exists(extract_dir):
-                    shutil.rmtree(extract_dir, ignore_errors=True)
+        # ── 1b. Archive Extraction — ZIP + RAR + APK (Zip-Slip / bomb safe) ───
+        # APKs are walked here too, not just by apk_analyzer: that reads the
+        # manifest and DEX strings, but everything else an APK carries — a
+        # bundled .so payload, a second APK, an embedded document — is visible
+        # only to this walk. Self-extracting EXEs come along for free, since
+        # _open_extractable_archive sniffs content rather than the extension.
+        archive_scan = _new_archive_scan()
+        _scan_archive_tree(file_path, archive_scan)
+        archive_contents = archive_scan["contents"]
+        if archive_contents:
+            for k in ("ips", "domains", "urls"):
+                iocs[k] = sorted(set((iocs.get(k) or []) + archive_scan["iocs"][k]))
+            pe_info["suspicious_sections"].extend(archive_scan["suspicious_sections"])
+            if archive_scan["is_pe"]:
+                pe_info["is_pe"] = True
+                pe_info["imphash"] = pe_info.get("imphash") or archive_scan["imphash"]
 
         # ── 1c. APK Analysis ─────────────────────────────────────────────────
         if original_filename.lower().endswith(".apk"):
@@ -628,6 +910,18 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
 
         # ── 1f. YARA scan ────────────────────────────────────────────────────
         yara_result = yara_scan_file(file_path)
+
+        # ── 1g. Fold in what the archive members found ───────────────────────
+        # Deliberately after 1d–1f: these merge INTO the container's own results,
+        # so those have to exist first. Each merge is deduplicated — see the
+        # helpers — because scoring charges per match, and an archive holding
+        # twenty copies of one payload is not twenty times the evidence.
+        if archive_contents:
+            doc_info = _promote_archive_document(doc_info, archive_scan)
+            pe_info["suspicious_strings"] = _merge_unique(
+                pe_info.get("suspicious_strings"), archive_scan["suspicious_strings"]
+            )
+            yara_result = _merge_yara_matches(yara_result, archive_scan["yara_matches"])
 
         # ── 2. OSINT Enrichment (concurrent) ──────────────────────────────────
         osint_data = {}
@@ -730,6 +1024,15 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         futures["malwarebazaar"] = loop.run_in_executor(
             _osint_executor, mb_check_hash, job.file_hash
         )
+        # Archive members get their own hash lookups. MalwareBazaar indexes
+        # samples, not the wrappers they travel in, so a zipped sample never
+        # matches on the container's hash however well-known it is. Bounded —
+        # see _select_inner_intel_targets.
+        inner_intel_targets = _select_inner_intel_targets(archive_scan, MAX_INNER_INTEL_LOOKUPS)
+        for idx, target in enumerate(inner_intel_targets):
+            futures[f"mb_inner_{idx}"] = loop.run_in_executor(
+                _osint_executor, mb_check_hash, target["sha256"]
+            )
         if iocs.get("urls"):
             futures["urlhaus"] = loop.run_in_executor(
                 _osint_executor, uh_check_urls, iocs.get("urls", [])
@@ -782,6 +1085,21 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             if key in osint_results and "error" not in (osint_results[key] or {}):
                 osint_data[key] = osint_results[key]
 
+        # An archive is a wrapper, so a sample confirmed inside it is evidence
+        # about the thing the user actually submitted — promote the first hit to
+        # the artifact's own MalwareBazaar result, which is what scoring reads.
+        # Only when the container itself is unknown: a direct hit is stronger.
+        if not (osint_data.get("malwarebazaar") or {}).get("found"):
+            for idx, target in enumerate(inner_intel_targets):
+                res = osint_results.get(f"mb_inner_{idx}") or {}
+                if res.get("found"):
+                    hit = dict(res)
+                    hit["matched_file"] = target["name"]
+                    hit["matched_sha256"] = target["sha256"]
+                    osint_data["malwarebazaar"] = hit
+                    print(f"MalwareBazaar hit on archive member '{target['name']}'")
+                    break
+
         # ── Safe-domain intel suppression ─────────────────────────────────────
         # A deliberately-submitted URL is kept in `iocs` by _strip_safe_indicators
         # (via `keep`) so the report can still geolocate it, graph it and render
@@ -829,6 +1147,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
             "file_hash": job.file_hash,
+            # Member hashes go to the scorer so the internal blocklist can match a
+            # known sample that merely arrived wrapped in an archive.
+            "archive_hashes": archive_scan["hash_candidates"],
             "submitted_url": submitted_url,
             "intel_partial": intel_partial,
             "static": {
@@ -878,6 +1199,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         score_data["pe_sections"] = pe_info.get("pe_sections", [])
         if archive_contents:
             score_data["archive_contents"] = archive_contents
+            # A truncated archive was only partly examined — say so in the report
+            # rather than letting "nothing found" imply "nothing there".
+            if archive_scan.get("truncated"):
+                score_data["archive_truncated"] = archive_scan["truncated"]
+            if archive_scan.get("unreadable"):
+                score_data["archive_unreadable"] = archive_scan["unreadable"]
         if apk_info.get("is_apk"):
             score_data["apk_info"] = apk_info
         if doc_info and doc_info.get("doc_type") not in (None, "unknown"):

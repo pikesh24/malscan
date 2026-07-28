@@ -735,13 +735,24 @@ def _check_enhanced_static(static: dict):
 
 # ── Known-hash check ─────────────────────────────────────────────────────────
 
-def _check_known_hashes(file_hash: Optional[str]):
-    """Returns (score, reasons, family, attribution) if hash is in blocklist."""
-    if not file_hash:
-        return 0, [], None, None
-    entry = KNOWN_MALICIOUS_HASHES.get(file_hash.lower())
-    if entry:
-        return entry["score"], [entry["reason"]], entry["family"], entry["attribution"]
+def _check_known_hashes(file_hash: Optional[str], member_hashes=None):
+    """Returns (score, reasons, family, attribution) if hash is in blocklist.
+
+    Archive members are checked too. The blocklist keys on a sample's own hash,
+    which a wrapper's hash never equals, so a known-malicious file simply zipped
+    up would otherwise sail past the one check written specifically to catch it.
+    The container is checked first: a direct hit describes the artifact itself.
+    """
+    candidates = [(file_hash, None)]
+    candidates += [(m.get("sha256"), m.get("name")) for m in (member_hashes or [])]
+    for h, member_name in candidates:
+        if not h:
+            continue
+        entry = KNOWN_MALICIOUS_HASHES.get(h.lower())
+        if not entry:
+            continue
+        reason = entry["reason"] if not member_name else f"{entry['reason']} Found inside the archive as '{member_name}'."
+        return entry["score"], [reason], entry["family"], entry["attribution"]
     return 0, [], None, None
 
 
@@ -794,7 +805,9 @@ def calculate_score(analysis_data: dict) -> dict:
     file_hash = analysis_data.get("file_hash")
 
     # Internal blocklist
-    hash_score, hash_reasons, hash_family, hash_attribution = _check_known_hashes(file_hash)
+    hash_score, hash_reasons, hash_family, hash_attribution = _check_known_hashes(
+        file_hash, analysis_data.get("archive_hashes")
+    )
     if hash_score > 0:
         intel_total += hash_score; artifact_total += hash_score; all_reasons += hash_reasons
         family = hash_family; attribution = hash_attribution

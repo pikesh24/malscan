@@ -486,13 +486,40 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <span class="sec-rule"></span>
   </div>
   <div class="card avoid">
+    {% if score_data.get('archive_truncated') %}
+    <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
+      Only part of this archive was examined — {{ score_data.get('archive_truncated') }}.
+    </div>
+    {% endif %}
+    {% if score_data.get('archive_unreadable') %}
+    <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
+      {{ score_data.get('archive_unreadable')|length }} file(s) could not be read after extraction,
+      commonly because antivirus quarantined them — they were NOT analysed.
+    </div>
+    {% endif %}
     {% for f in score_data.get('archive_contents') %}
-    <div style="display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:10px;padding:7px 0;border-bottom:1px solid var(--border);">
-      <span style="word-break:break-all;">{{ f.get('name') }}</span>
-      <span style="white-space:nowrap;margin-left:10px;">
-        {% if f.get('is_pe') %}<span class="chip chip-neutral">PE</span>{% endif %}
-        {% if f.get('ioc_count') %}<span class="vmal" style="font-weight:700;">{{ f.get('ioc_count') }} IOCs</span>{% endif %}
-      </span>
+    <div style="font-family:var(--mono);font-size:10px;padding:7px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="word-break:break-all;">
+          {% if f.get('depth', 1) > 1 %}<span style="opacity:.55;">nested&nbsp;›&nbsp;</span>{% endif %}{{ f.get('name') }}
+        </span>
+        <span style="white-space:nowrap;margin-left:10px;">
+          {% if f.get('is_pe') %}<span class="chip chip-neutral">PE</span>{% endif %}
+          {% if f.get('doc_type') and f.get('doc_type') != 'unknown' %}<span class="chip chip-neutral">{{ f.get('doc_type')|upper }}</span>{% endif %}
+          {% if f.get('ioc_count') %}<span class="vmal" style="font-weight:700;">{{ f.get('ioc_count') }} IOCs</span>{% endif %}
+        </span>
+      </div>
+      {# The per-member hash and rule names are the forensic payload here: they
+         turn "this archive is malicious" into "this file inside it is, and here
+         is the hash you can pivot on". #}
+      {% if f.get('yara_rules') %}
+      <div class="vmal" style="font-size:9px;font-weight:700;margin-top:3px;">
+        YARA: {{ f.get('yara_rules')|join(', ') }}
+      </div>
+      {% endif %}
+      {% if f.get('sha256') %}
+      <div style="font-size:9px;opacity:.6;margin-top:2px;word-break:break-all;">{{ f.get('sha256') }}</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
