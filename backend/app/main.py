@@ -1022,11 +1022,24 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # ── 1. Static Analysis ───────────────────────────────────────────────
         # Read the artifact once and reuse the bytes across analyzers, instead of
         # re-reading a (up to 50 MB) file from disk for each pass.
+        # If this read fails, EVERY analyser below silently receives nothing:
+        # extraction, PE parsing, YARA and the document analysers all return
+        # empty, and the scan reports Clear on a file it never opened. The
+        # commonest cause is real-time antivirus on the scanning host
+        # quarantining the sample between upload and analysis — which correlates
+        # with the file being genuinely malicious, making this the worst
+        # possible moment to return a clean verdict. Observed in this project's
+        # own test run, where a fixture containing a download cradle was
+        # confiscated mid-scan.
+        artifact_unreadable = None
         try:
             with open(file_path, "rb") as f:
                 raw_bytes = f.read()
-        except Exception:
+        except Exception as e:
             raw_bytes = None
+            artifact_unreadable = type(e).__name__
+            print(f"Artifact could not be read ({artifact_unreadable}) — "
+                  f"commonly antivirus quarantine. Nothing was analysed.")
         iocs    = extract_iocs(file_path, data=raw_bytes)
         pe_info = analyze_pe(file_path, data=raw_bytes)
         apk_info = {}
@@ -1468,6 +1481,8 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             # Same consequence, different cause: the format itself cannot be
             # opened here. Kept separate so the report states which it was.
             "unsupported_container": archive_scan.get("unsupported_container"),
+            # The artifact itself could not be read, so nothing was analysed.
+            "artifact_unreadable": artifact_unreadable,
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "pe_sections":         pe_info.get("pe_sections", []),

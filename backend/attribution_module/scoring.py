@@ -1333,6 +1333,24 @@ def calculate_score(analysis_data: dict) -> dict:
             f"known way of moving a sample past scanners — re-submit the contents "
             f"unpacked to get a real verdict."
         )
+    elif analysis_data.get("artifact_unreadable") and verdict == "Clear":
+        # Nothing at all was analysed, so this is the strongest possible case
+        # for refusing to say Clear. The usual cause — antivirus on the scanning
+        # host confiscating the sample — is itself evidence about the file, so
+        # the wording says so rather than reporting a bland I/O error.
+        verdict = "Inconclusive"
+        reason_code = analysis_data["artifact_unreadable"]
+        inconclusive_reason = (
+            f"The submitted file could not be read ({reason_code}), so nothing was analysed "
+            f"at all. The usual cause is antivirus on the scanning server quarantining the "
+            f"file — which is itself a reason to treat it as dangerous, not safe."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — the file could not be read ({reason_code}) and no analysis ran: "
+            f"no hash lookup, no YARA, no static or document analysis. This commonly means "
+            f"antivirus on the scanning server removed it, which is a signal in its own right. "
+            f"Treat this file as untrusted until it can be examined."
+        )
     elif unsupported_container and verdict == "Clear":
         # Distinct wording on purpose. Telling someone their 7-Zip archive is
         # password-protected would be a confident, specific, wrong explanation —
