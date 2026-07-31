@@ -480,7 +480,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 {# Also renders when there are no contents at all: an archive nothing could be
    extracted from is precisely when the reader needs to be told why. #}
 {% if score_data.get('archive_contents') or score_data.get('archive_encrypted')
-      or score_data.get('archive_truncated') or score_data.get('archive_unreadable') %}
+      or score_data.get('archive_truncated') or score_data.get('archive_unreadable')
+      or score_data.get('archive_unsupported') %}
 {% set sec.n = sec.n + 1 %}
 <section class="sec">
   <div class="sec-head">
@@ -491,6 +492,14 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <span class="sec-rule"></span>
   </div>
   <div class="card avoid">
+    {% if score_data.get('archive_unsupported') %}
+    <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
+      <strong>{{ score_data.get('archive_unsupported') }} archives cannot be opened by this scanner.</strong>
+      Nothing inside was extracted, hashed, YARA-scanned or analysed. A clean result here means
+      the contents could not be read, not that they are safe — extract it and submit the
+      contents individually.
+    </div>
+    {% endif %}
     {% if score_data.get('archive_encrypted') %}
     <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
       <strong>This archive is password-protected.</strong>

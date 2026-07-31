@@ -1122,6 +1122,8 @@ def calculate_score(analysis_data: dict) -> dict:
     # Ordered after the intel branch and gated on Clear for the same reason it
     # is: a real detection must never be relabelled Inconclusive and buried.
     unexaminable = analysis_data.get("unexaminable") or []
+    unsupported_container = analysis_data.get("unsupported_container")
+
     if unexaminable and verdict == "Clear":
         verdict = "Inconclusive"
         listed = ", ".join(unexaminable[:3]) + (" …" if len(unexaminable) > 3 else "")
@@ -1137,6 +1139,22 @@ def calculate_score(analysis_data: dict) -> dict:
             f"No hash lookup, YARA rule or file analysis ran against them. This is a "
             f"known way of moving a sample past scanners — re-submit the contents "
             f"unpacked to get a real verdict."
+        )
+    elif unsupported_container and verdict == "Clear":
+        # Distinct wording on purpose. Telling someone their 7-Zip archive is
+        # password-protected would be a confident, specific, wrong explanation —
+        # the same failure as the hard-coded VirusTotal sentence this replaced.
+        verdict = "Inconclusive"
+        inconclusive_reason = (
+            f"This is a {unsupported_container} archive, a format this scanner cannot "
+            f"open, so nothing inside it was examined. Nothing was found because "
+            f"nothing could be read — that is not the same as safe. Extract it and "
+            f"submit the contents individually."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — {unsupported_container} archives cannot be extracted by "
+            f"this scanner, so no file inside was hashed, YARA-scanned or analysed. "
+            f"Re-submit the contents unpacked to get a real verdict."
         )
 
     return {

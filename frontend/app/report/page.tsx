@@ -143,6 +143,7 @@ function ReportContent() {
     const archiveEncrypted = reportData?.archive_encrypted || []
     const archiveTruncated = reportData?.archive_truncated || null
     const archiveUnreadable = reportData?.archive_unreadable || []
+    const archiveUnsupported = reportData?.archive_unsupported || null
     const geoLat = reportData?.osint_summary?.lat ?? null
     const geoLon = reportData?.osint_summary?.lon ?? null
     const geoCity = reportData?.osint_summary?.city || ""
@@ -605,12 +606,20 @@ function ReportContent() {
 
                     {/* ARCHIVE CONTENTS — also shown when nothing could be extracted,
                         which is exactly when the reader needs to know why. */}
-                    {(archiveContents.length > 0 || archiveEncrypted.length > 0 || archiveTruncated || archiveUnreadable.length > 0) && (
+                    {(archiveContents.length > 0 || archiveEncrypted.length > 0 || archiveTruncated || archiveUnreadable.length > 0 || archiveUnsupported) && (
                         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.25 }} className="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden print:break-inside-avoid print:shadow-none">
                             <div className="p-4 border-b border-gray-200 bg-gray-50">
                                 <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Archive size={14}/> Archive Contents {archiveContents.length > 0 ? `(${archiveContents.length} files)` : "(not examined)"}</h3>
                             </div>
                             <div className="p-4">
+                                {archiveUnsupported && (
+                                    <div className="mb-4 p-3 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                                        <div className="font-bold mb-1">{archiveUnsupported} archives cannot be opened by this scanner.</div>
+                                        Nothing inside was extracted, hashed, YARA-scanned or analysed. A clean result here means
+                                        the contents could not be read, not that they are safe — extract it and submit the contents
+                                        individually.
+                                    </div>
+                                )}
                                 {archiveEncrypted.length > 0 && (
                                     <div className="mb-4 p-3 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
                                         <div className="font-bold mb-1">This archive is password-protected.</div>

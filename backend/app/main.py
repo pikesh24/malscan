@@ -492,6 +492,39 @@ def _open_extractable_archive(file_path: str):
             print(f"RAR open failed: {e}")
     return None, None, None
 
+
+# Container formats identified by magic bytes but with no extraction backend
+# here. Naming the format in a report while never reading a byte of its contents
+# is the same false-clean the password-protected case produced: "nothing found"
+# describing a scan that never looked. Keyed on the magic_type strings
+# static_analyzer emits, so the two lists cannot drift apart silently.
+UNSUPPORTED_CONTAINER_TYPES = {
+    "7-Zip Archive":                "7-Zip",
+    "GZIP Compressed":              "GZIP",
+    "BZIP2 Compressed":             "BZIP2",
+    "XZ Compressed":                "XZ",
+    "Microsoft Cabinet (CAB) File": "Microsoft Cabinet (CAB)",
+    "InstallShield CAB":            "InstallShield CAB",
+    "TAR Archive":                  "TAR",
+    "ISO 9660 Disc Image":          "ISO disc image",
+}
+
+
+def _unextractable_container(magic_type: str) -> str | None:
+    """Names the container format when the file is one we cannot open, else None.
+
+    RAR is conditional rather than listed: it IS supported, but only when an
+    unrar/bsdtar/7z backend exists on the host. Without one the scan silently
+    examined nothing, which docs/RUNNING.md warns about generally but no report
+    ever said out loud.
+    """
+    if magic_type in UNSUPPORTED_CONTAINER_TYPES:
+        return UNSUPPORTED_CONTAINER_TYPES[magic_type]
+    if magic_type == "RAR Archive" and not RAR_ENABLED:
+        return "RAR (no extraction backend installed on this server)"
+    return None
+
+
 # zipfile.ZipInfo and rarfile.RarInfo expose the same three member attributes,
 # so one loop handles both — these normalize the small API differences.
 def _member_name(m) -> str:
@@ -577,6 +610,9 @@ def _new_archive_scan() -> dict:
         # password-protected. Distinct from `unreadable`, which is for files
         # that DID extract and then failed to read (usually AV quarantine).
         "encrypted": [],
+        # Set when the artifact is a container format with no extraction backend
+        # here (7-Zip, CAB, ISO, TAR, RAR without unrar). Holds the format name.
+        "unsupported_container": None,
         "is_pe": False,
         "imphash": None,
     }
@@ -977,6 +1013,16 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # _open_extractable_archive sniffs content rather than the extension.
         archive_scan = _new_archive_scan()
         _scan_archive_tree(file_path, archive_scan)
+
+        # A container we can name but cannot open. Recorded on the same footing
+        # as a password-protected archive, because the user-visible failure is
+        # identical: the report describes a 7-Zip archive (or an ISO, or a RAR
+        # on a host with no backend) while nothing inside it was ever read.
+        _unsupported = _unextractable_container(pe_info.get("magic_type", ""))
+        if _unsupported and not archive_scan["contents"]:
+            archive_scan["unsupported_container"] = _unsupported
+            print(f"Container format not extractable here: {_unsupported} — contents not scanned")
+
         archive_contents = archive_scan["contents"]
         if archive_contents:
             for k in ("ips", "domains", "urls"):
@@ -1345,6 +1391,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             # would-be "Clear" into "Inconclusive" on the strength of this: a
             # scan that never saw the files cannot vouch for them.
             "unexaminable": archive_scan.get("encrypted") or [],
+            # Same consequence, different cause: the format itself cannot be
+            # opened here. Kept separate so the report states which it was.
+            "unsupported_container": archive_scan.get("unsupported_container"),
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "pe_sections":         pe_info.get("pe_sections", []),
@@ -1404,6 +1453,8 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             score_data["archive_unreadable"] = archive_scan["unreadable"]
         if archive_scan.get("encrypted"):
             score_data["archive_encrypted"] = archive_scan["encrypted"]
+        if archive_scan.get("unsupported_container"):
+            score_data["archive_unsupported"] = archive_scan["unsupported_container"]
         if apk_info.get("is_apk"):
             score_data["apk_info"] = apk_info
         if doc_info and doc_info.get("doc_type") not in (None, "unknown"):

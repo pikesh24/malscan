@@ -34,7 +34,27 @@ MAGIC_SIGNATURES = [
     (b"\x23\x21",                "Script / Shebang (shell script, Python, etc.)"),
     (b"\xFF\xD8\xFF",            "JPEG Image"),
     (b"\x89PNG",                 "PNG Image"),
+    (b"\xFD7zXZ\x00",           "XZ Compressed"),
 ]
+
+# Formats whose signature is NOT at offset 0, so the prefix scan above can never
+# see them. Both are ordinary malware carriers — an ISO is the standard way to
+# deliver a payload without the mark-of-the-web that would otherwise warn the
+# user, and .tar.gz is routine on Linux/macOS — and both previously came back as
+# "Unknown", which reads in a report as "nothing recognisable here".
+#
+# ISO 9660 repeats its descriptor every 2048 bytes from 0x8000; checking the
+# first three covers plain ISO, UDF hybrids and most .img files.
+OFFSET_SIGNATURES = [
+    (257,   b"ustar",  "TAR Archive"),
+    (32769, b"CD001",  "ISO 9660 Disc Image"),
+    (34817, b"CD001",  "ISO 9660 Disc Image"),
+    (36865, b"CD001",  "ISO 9660 Disc Image"),
+]
+
+# The largest offset above, plus the signature length — how much of a file has to
+# be readable before every signature has had its chance.
+_MAX_SIGNATURE_REACH = 36865 + 5
 
 # ── Suspicious string patterns ────────────────────────────────────────────────
 
@@ -123,6 +143,22 @@ def detect_file_type(file_path: str, data: bytes = None) -> dict:
             if header[:len(magic)] == magic:
                 result["magic_type"] = type_name
                 break
+
+        # Only when nothing matched at offset 0. Reading further costs an extra
+        # seek, and a file that already identified as a PE or a ZIP is not also
+        # an ISO.
+        if result["magic_type"] == "Unknown":
+            probe = data
+            if probe is None or len(probe) < _MAX_SIGNATURE_REACH:
+                try:
+                    with open(file_path, "rb") as f:
+                        probe = f.read(_MAX_SIGNATURE_REACH)
+                except OSError:
+                    probe = probe or b""
+            for offset, magic, type_name in OFFSET_SIGNATURES:
+                if probe[offset:offset + len(magic)] == magic:
+                    result["magic_type"] = type_name
+                    break
 
         # Flag if a file claims to be an image/text but is actually an executable
         if result["magic_type"] in (
