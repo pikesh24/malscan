@@ -567,6 +567,10 @@ def _new_archive_scan() -> dict:
         "suspicious_strings": [],
         "yara_matches": [],
         "documents": [],
+        # (member name, apk_info) for every APK found inside. An APK arriving
+        # wrapped in a ZIP is the same threat as one arriving directly, and the
+        # permission scoring is the strongest Android signal available.
+        "apks": [],
         "hash_candidates": [],
         "unreadable": [],
         # Members that could not be extracted because the archive is
@@ -750,6 +754,23 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     inner_doc = analyze_document(inner_path, display_name) or {}
     if inner_doc.get("doc_type") not in (None, "unknown"):
         acc["documents"].append((display_name, inner_doc))
+
+    # An APK inside an archive. Only ZIP members are asked, so this costs one
+    # archive open on the members that could possibly be APKs and nothing on the
+    # rest. Without it, wrapping a banking trojan in a ZIP discarded every
+    # Android-specific signal — permissions, overlay/accessibility conjunction,
+    # DEX strings — while still looking thoroughly scanned.
+    try:
+        if zipfile.is_zipfile(inner_path):
+            inner_apk = analyze_apk(inner_path)
+            if inner_apk.get("is_apk"):
+                acc["apks"].append((display_name, inner_apk))
+                for k in ("ips", "urls"):
+                    acc["iocs"][k] = sorted(
+                        set(acc["iocs"][k]) | set(inner_apk.get(f"dex_{k}") or [])
+                    )
+    except Exception as e:
+        print(f"APK analysis of member '{display_name}' failed: {e}")
 
     acc["suspicious_strings"].extend(
         analyze_suspicious_strings(inner_path, data=data).get("suspicious_strings") or []
@@ -966,11 +987,28 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 pe_info["imphash"] = pe_info.get("imphash") or archive_scan["imphash"]
 
         # ── 1c. APK Analysis ─────────────────────────────────────────────────
-        if original_filename.lower().endswith(".apk"):
+        # Gated on content, not on the filename. analyze_apk already answers the
+        # question itself — it requires a readable ZIP containing
+        # AndroidManifest.xml and returns is_apk False otherwise — so calling it
+        # for any ZIP costs one archive open and removes a rename as an evasion.
+        # Permission scoring is the strongest Android signal in the product;
+        # `evil.apk` renamed `evil.zip` used to discard all of it.
+        if zipfile.is_zipfile(file_path):
             apk_info = analyze_apk(file_path)
-            for k in ("ips", "urls"):
-                apk_key = f"dex_{k}"
-                iocs[k] = list(set(iocs.get(k, []) + apk_info.get(apk_key, [])))
+            if apk_info.get("is_apk"):
+                for k in ("ips", "urls"):
+                    apk_key = f"dex_{k}"
+                    iocs[k] = list(set(iocs.get(k, []) + apk_info.get(apk_key, [])))
+
+        # A ZIP is a wrapper, so an APK found inside it is evidence about the
+        # thing the user submitted — the same reasoning that promotes an archive
+        # member's MalwareBazaar hit below. Only when the container is not itself
+        # an APK: a direct APK's own manifest always wins.
+        if not apk_info.get("is_apk") and archive_scan.get("apks"):
+            member_name, inner_apk = archive_scan["apks"][0]
+            apk_info = dict(inner_apk)
+            apk_info["matched_file"] = member_name
+            print(f"APK found inside archive member '{member_name}' — analysing its manifest")
 
         # ── 1d. Document Analysis (PDF / Office / OLE) ───────────────────────
         doc_info = analyze_document(file_path, original_filename)
