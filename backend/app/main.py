@@ -59,6 +59,7 @@ try:
     )
     from analysis_engine.apk_analyzer import analyze_apk
     from analysis_engine.document_analyzer import analyze_document
+    from analysis_engine.lnk_analyzer import analyze_lnk
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
     from analysis_engine.malwarebazaar_client import check_hash as mb_check_hash
     from analysis_engine.threatfox_client import check_iocs as tf_check_iocs
@@ -604,6 +605,10 @@ def _new_archive_scan() -> dict:
         # wrapped in a ZIP is the same threat as one arriving directly, and the
         # permission scoring is the strongest Android signal available.
         "apks": [],
+        # (member name, lnk_info) for shortcuts with findings. A malicious .lnk
+        # almost always arrives inside a container, because that is what strips
+        # the mark-of-the-web warning.
+        "lnks": [],
         "hash_candidates": [],
         "unreadable": [],
         # Members that could not be extracted because the archive is
@@ -790,6 +795,13 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     inner_doc = analyze_document(inner_path, display_name) or {}
     if inner_doc.get("doc_type") not in (None, "unknown"):
         acc["documents"].append((display_name, inner_doc))
+
+    # A shortcut inside an archive. This is the ordinary way a malicious .lnk
+    # travels — inside a ZIP or an ISO, because the container strips the
+    # mark-of-the-web warning the user would otherwise see.
+    inner_lnk = analyze_lnk(inner_path, data=data)
+    if inner_lnk.get("is_lnk") and inner_lnk.get("suspicious"):
+        acc["lnks"].append((display_name, inner_lnk))
 
     # An APK inside an archive. Only ZIP members are asked, so this costs one
     # archive open on the members that could possibly be APKs and nothing on the
@@ -1058,6 +1070,25 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
 
         # ── 1d. Document Analysis (PDF / Office / OLE) ───────────────────────
         doc_info = analyze_document(file_path, original_filename)
+
+        # ── 1d-2. Windows shortcut ───────────────────────────────────────────
+        # Content-gated like the APK path: a .lnk is routinely renamed, and the
+        # signature (header size plus CLSID) is unambiguous.
+        lnk_info = analyze_lnk(file_path, data=raw_bytes)
+        # A shortcut found inside the archive is evidence about what was
+        # submitted, same as a promoted APK or MalwareBazaar hit. Only when the
+        # artifact is not itself a shortcut.
+        if not lnk_info.get("is_lnk") and archive_scan.get("lnks"):
+            member_name, inner = archive_scan["lnks"][0]
+            lnk_info = dict(inner)
+            lnk_info["matched_file"] = member_name
+            print(f"Suspicious shortcut inside archive member '{member_name}'")
+        if lnk_info.get("is_lnk"):
+            # A shortcut's command line frequently carries the second-stage URL,
+            # which is an indicator in its own right.
+            lnk_iocs = extract_iocs(file_path, data=(lnk_info.get("arguments") or "").encode())
+            for k in ("ips", "domains", "urls"):
+                iocs[k] = sorted(set((iocs.get(k) or []) + (lnk_iocs.get(k) or [])))
 
         # ── 1e. Suspicious string patterns ───────────────────────────────────
         string_info = analyze_suspicious_strings(file_path, data=raw_bytes)
@@ -1419,6 +1450,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "iocs":     iocs,
             "apk":      apk_info,
             "document": doc_info,
+            "lnk":      lnk_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────

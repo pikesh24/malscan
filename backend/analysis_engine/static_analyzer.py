@@ -35,7 +35,16 @@ MAGIC_SIGNATURES = [
     (b"\xFF\xD8\xFF",            "JPEG Image"),
     (b"\x89PNG",                 "PNG Image"),
     (b"\xFD7zXZ\x00",           "XZ Compressed"),
+    # HeaderSize 0x4C followed by the Shell Link CLSID. The leading four bytes
+    # alone are just a small integer and would collide with plenty of files, so
+    # the CLSID is part of the signature — which is why the header read below is
+    # 32 bytes rather than 16.
+    (b"\x4C\x00\x00\x00\x01\x14\x02\x00\x00\x00\x00\x00\xC0\x00\x00\x00\x00\x00\x00\x46",
+     "Windows Shortcut (LNK)"),
 ]
+
+# Enough for the longest prefix signature above.
+_HEADER_READ_BYTES = 32
 
 # Formats whose signature is NOT at offset 0, so the prefix scan above can never
 # see them. Both are ordinary malware carriers — an ISO is the standard way to
@@ -134,10 +143,10 @@ def detect_file_type(file_path: str, data: bytes = None) -> dict:
         result["extension"] = ext
 
         if data is not None:
-            header = data[:16]
+            header = data[:_HEADER_READ_BYTES]
         else:
             with open(file_path, "rb") as f:
-                header = f.read(16)
+                header = f.read(_HEADER_READ_BYTES)
 
         for magic, type_name in MAGIC_SIGNATURES:
             if header[:len(magic)] == magic:

@@ -242,6 +242,9 @@ _LABEL_TO_AXIS = {
     "PE Section Entropy":                       "behavioral_signals",
     "Document Threat Analysis":                 "behavioral_signals",
     "APK Permissions":                          "behavioral_signals",
+    # What a shortcut would execute is a statement about behaviour, not about
+    # the file's reputation or where it is hosted.
+    "Shortcut Command Line":                    "behavioral_signals",
     "ThreatFox IOC Match":                      "network_reputation",
     "URLhaus Malware Distribution":             "network_reputation",
     "AbuseIPDB Abuse Confidence":               "network_reputation",
@@ -483,6 +486,60 @@ def _check_urlscan(osint):
             score = 15
             reasons.append(f"URLScan.io assigned a risk score of {us['verdict_score']}.")
     return score, reasons
+
+
+# Weights for shortcut findings, keyed on lnk_analyzer's stable codes rather
+# than its display wording. Unlike the registrar and hosting weights these are
+# NOT measured against a base-rate sample — no such sample exists for shortcuts.
+# They are set from how often each thing appears in a shortcut somebody made on
+# purpose: an ordinary Windows shortcut points at an application and passes no
+# arguments at all, so most of these are near-zero events rather than merely
+# unusual ones.
+_LNK_WEIGHTS = {
+    "encoded_command":        45,   # base64 payload inside a shortcut; no benign use
+    "whitespace_padding":     45,   # exists only to hide the command from the user
+    "invoke_expression":      35,
+    "download_cradle":        35,
+    "certutil_abuse":         35,
+    "mshta_remote":           30,
+    "document_icon_disguise": 30,   # the disguise itself
+    "rundll32_script":        25,
+    "base64_decode":          25,
+    "hidden_execution":       20,
+    "interpreter_target":     15,   # legitimate but uncommon on its own
+    "hidden_window":          15,
+    "unc_path":               10,
+    "contains_url":           10,
+    "long_command_line":      10,
+    "user_writable_dir":       5,   # true of plenty of ordinary installers
+}
+
+
+def _check_lnk(analysis_data: dict):
+    """Scores a Windows shortcut by what it would actually run.
+
+    A .lnk is a stored command line, which is why it is a standard delivery and
+    persistence artifact — it arrives looking like an invoice and executes
+    whatever it says. Nothing here used to parse them, so a shortcut carrying an
+    encoded PowerShell payload was scanned as an unremarkable small binary.
+
+    An ordinary shortcut produces no findings at all: it points at an
+    application and passes no arguments. That is what makes even the modest
+    weights defensible — the baseline really is zero, not "a bit noisy".
+    """
+    lnk = analysis_data.get("lnk") or {}
+    if not lnk.get("is_lnk"):
+        return 0, []
+
+    score = sum(_LNK_WEIGHTS.get(code, 0) for code in lnk.get("codes") or [])
+    reasons = [f"Shortcut: {finding}" for finding in lnk.get("suspicious") or []]
+
+    args = (lnk.get("arguments") or "").strip()
+    if args and score:
+        # The command line is the evidence; show it rather than only describing it.
+        reasons.append(f"Shortcut command line: {args[:200]}")
+
+    return min(score, 100), reasons
 
 
 def _check_resource_chain(osint):
@@ -1008,6 +1065,10 @@ def calculate_score(analysis_data: dict) -> dict:
     record("Resource Chain", s)
     s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; artifact_total += s; all_reasons += r
     record("APK Permissions", s)
+    # Artifact evidence: the shortcut IS the submitted thing, and what it would
+    # run is read out of its own structure rather than inferred.
+    s, r      = _check_lnk(analysis_data);         heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Shortcut Command Line", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
     # this run — set by app/main.py. A partial scan is stored but never cached,
