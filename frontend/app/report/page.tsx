@@ -134,6 +134,7 @@ function ReportContent() {
     const submittedUrl = reportData?.submitted_url || null
     const vtStats = reportData?.osint_summary?.virustotal || null
     const urlscanData = reportData?.osint_summary?.urlscan || null
+    const resourceChain = reportData?.osint_summary?.resource_chain || null
     const apkInfo = reportData?.apk_info || null
     const archiveContents = reportData?.archive_contents || []
     const geoLat = reportData?.osint_summary?.lat ?? null
@@ -496,7 +497,44 @@ function ReportContent() {
                                     {urlscanData.page_country && <div className="min-w-0"><span className="text-gray-400 uppercase block mb-1">Country</span> <div className="text-gray-800 truncate" title={urlscanData.page_country}>{urlscanData.page_country}</div></div>}
                                     {urlscanData.page_server && <div className="min-w-0"><span className="text-gray-400 uppercase block mb-1">Server</span> <div className="text-gray-800 truncate" title={urlscanData.page_server}>{urlscanData.page_server}</div></div>}
                                 </div>
-                                {urlscanData.outgoing_domains && urlscanData.outgoing_domains.length > 0 && (
+                                {/* Third parties the page loads. These used to render as one
+                                    undifferentiated grey list, which read as "checked and fine"
+                                    next to a clean score when in fact nothing had looked at them —
+                                    that is how a flagged S3 bucket sat in a 0/100 report. Flagged,
+                                    checked-clean and never-checked are now visibly different. */}
+                                {resourceChain?.hosts?.length > 0 ? (
+                                    <div className="mt-4 pt-4 border-t border-gray-100">
+                                        <span className="text-[10px] font-mono text-gray-400 uppercase">
+                                            Third-Party Resources ({resourceChain.hosts.length}):
+                                        </span>
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {resourceChain.hosts.map((h: any) => {
+                                                const mal = h.virustotal?.malicious || 0
+                                                const flagged = mal >= 2
+                                                const checked = h.checked || h.virustotal
+                                                const cls = flagged
+                                                    ? "bg-red-50 border-red-300 text-red-700 font-bold"
+                                                    : checked
+                                                        ? "bg-green-50 border-green-200 text-green-800"
+                                                        : "bg-white border-gray-200 text-gray-500 border-dashed"
+                                                const title = flagged
+                                                    ? `${h.host} — flagged by ${mal} VirusTotal vendors`
+                                                    : checked
+                                                        ? `${h.host} — reputation checked, nothing found`
+                                                        : `${h.host} — observed but NOT reputation checked${h.facets?.length ? ` (${h.facets.join(", ")})` : ""}`
+                                                return (
+                                                    <span key={h.host} title={title}
+                                                        className={`text-[9px] px-2 py-1 rounded-md border font-mono shadow-sm truncate max-w-full ${cls}`}>
+                                                        {flagged && "⚠ "}{h.host}{flagged && ` (${mal})`}
+                                                    </span>
+                                                )
+                                            })}
+                                        </div>
+                                        <div className="mt-2 text-[9px] font-mono text-gray-400">
+                                            Solid = reputation checked · Dashed = observed only, not checked
+                                        </div>
+                                    </div>
+                                ) : urlscanData.outgoing_domains && urlscanData.outgoing_domains.length > 0 && (
                                     <div className="mt-4 pt-4 border-t border-gray-100">
                                         <span className="text-[10px] font-mono text-gray-400 uppercase">Outgoing Domains ({urlscanData.outgoing_domains.length}):</span>
                                         <div className="flex flex-wrap gap-1.5 mt-2">

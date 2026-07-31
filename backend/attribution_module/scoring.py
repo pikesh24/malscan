@@ -248,6 +248,9 @@ _LABEL_TO_AXIS = {
     "VirusTotal Consensus":                     "network_reputation",
     "Benign VirusTotal Consensus (reduction)":  "network_reputation",
     "URLScan Verdict":                          "network_reputation",
+    # The reputation of hosts the page pulls content from is still a statement
+    # about network infrastructure, just one hop out from the domain itself.
+    "Resource Chain":                           "network_reputation",
     "IOC Volume":                               "network_reputation",
     "URL Anomalies":                            "network_reputation",
     "Registrar Reputation":                     "hosting_risk",
@@ -480,6 +483,104 @@ def _check_urlscan(osint):
             score = 15
             reasons.append(f"URLScan.io assigned a risk score of {us['verdict_score']}.")
     return score, reasons
+
+
+def _check_resource_chain(osint):
+    """Scores the third parties a page loads, not just the page.
+
+    The gap this closes: reputation was only ever asked about the submitted
+    domain. deutschland.com scored 0/100 — 1 VirusTotal vendor, below the noise
+    floor, and URLScan's own engines called it benign — while serving a script
+    from an S3 bucket 9 vendors flagged. The bucket was in the report already,
+    rendered as a chip and read by nothing.
+
+    Weighting follows the split described in resource_chain.py:
+
+    * A reputation hit on a third-party host is specific evidence and scores
+      like one, though below a hit on the artifact itself — "this page loads
+      something known-bad" is a weaker claim about the page than "this page IS
+      known-bad", and a compromised ad network briefly poisons a lot of
+      innocent sites.
+    * Structure alone does not score. Object storage, free hosting and CDNs
+      carry an enormous amount of the legitimate web, and per
+      tests/live/base_rates.py a signal that fires across the Tranco top 10,000
+      carries little information however sinister it sounds. It is reported so
+      the analyst sees it, and it decides lookup order, which is where it earns
+      its keep.
+    * One exception scores, because the conjunction really is rare on ordinary
+      pages: an executable or archive payload fetched from a third-party host.
+      Legitimate sites do serve installers, but from their own domain — that is
+      why first-party hosts are dropped before this check ever sees the list.
+    """
+    score, reasons = 0, []
+    chain = osint.get("resource_chain") or {}
+    if chain.get("skipped") or not chain.get("hosts"):
+        return 0, reasons
+
+    for hit in chain.get("intel_hits") or []:
+        source = hit.get("source", "intel")
+        indicator = hit.get("matched_ioc") or hit.get("matched_url") or ""
+        score += 45
+        reasons.append(
+            f"A third-party resource this page loads is listed in "
+            f"{source}: {indicator[:70]}"
+        )
+
+    for entry in chain.get("hosts") or []:
+        stats = entry.get("virustotal") or {}
+        mal = stats.get("malicious", 0)
+        sus = stats.get("suspicious", 0)
+        host = entry.get("host", "?")
+        # Same shape as _check_virustotal: 1 vendor is noise, and the thresholds
+        # sit one step below their artifact-level equivalents.
+        if mal >= 5:
+            score += 70
+            reasons.append(
+                f"This page loads content from {host}, flagged as malicious by "
+                f"{mal} VirusTotal vendors."
+            )
+        elif mal >= 3:
+            score += 40
+            reasons.append(
+                f"This page loads content from {host}, flagged by {mal} VirusTotal vendors."
+            )
+        elif mal >= 2:
+            score += 20
+            reasons.append(
+                f"This page loads content from {host}, flagged by {mal} VirusTotal vendors."
+            )
+        elif sus >= 3 and mal == 0:
+            score += 10
+            reasons.append(
+                f"This page loads content from {host}, marked suspicious by {sus} vendors."
+            )
+
+        facets = entry.get("facets") or []
+        if "executable_payload" in facets:
+            score += 25
+            reasons.append(
+                f"This page fetches an executable or script payload from a third-party host ({host})."
+            )
+        elif "archive_payload" in facets:
+            score += 10
+            reasons.append(f"This page fetches an archive payload from a third-party host ({host}).")
+
+    # Context only — deliberately scores nothing, in the manner of
+    # _check_registrar. Named so the report can show the analyst which hosts
+    # were merely observed rather than letting a clean total imply they were
+    # all vetted.
+    unvetted = [
+        e["host"] for e in chain.get("hosts") or []
+        if not e.get("checked") and not e.get("virustotal")
+    ]
+    if unvetted:
+        reasons.append(
+            f"{len(unvetted)} third-party host(s) were observed but not "
+            f"reputation-checked: {', '.join(unvetted[:5])}"
+            + (" ..." if len(unvetted) > 5 else "")
+        )
+
+    return min(score, 100), reasons
 
 
 def _check_ioc_volume(iocs):
@@ -892,6 +993,19 @@ def calculate_score(analysis_data: dict) -> dict:
     if submitted_url:
         artifact_total += s
     record("URLScan Verdict", s)
+    # Counted as INTEL, not heuristic, and the distinction is load-bearing. The
+    # benign-consensus dampening below halves heuristic suspicion whenever a
+    # broad VirusTotal scan of the artifact came back clean — which is exactly
+    # the state a page has when its own domain is fine and the danger is in a
+    # third-party resource. Filed as a heuristic, this check would be halved
+    # precisely when it is right. Reputation hits on a loaded host are specific
+    # external evidence, and the one structural signal that scores here (an
+    # executable fetched from someone else's host) is behavioural enough that it
+    # should likewise not be discounted by the wrapper looking clean.
+    s, r      = _check_resource_chain(osint);      intel_total += s; all_reasons += r
+    if submitted_url:
+        artifact_total += s
+    record("Resource Chain", s)
     s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; artifact_total += s; all_reasons += r
     record("APK Permissions", s)
 
@@ -1018,6 +1132,7 @@ def calculate_score(analysis_data: dict) -> dict:
             "virustotal":      osint.get("virustotal", {}).get("stats") if "virustotal" in osint else None,
             "virustotal_detections": osint.get("virustotal", {}).get("detections", []) if "virustotal" in osint else [],
             "urlscan":         osint.get("urlscan") if "urlscan" in osint else None,
+            "resource_chain":  osint.get("resource_chain") if "resource_chain" in osint else None,
         },
         "graph_nodes": graph_nodes,
         "graph_edges": graph_edges,

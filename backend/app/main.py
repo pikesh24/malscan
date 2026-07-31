@@ -53,6 +53,10 @@ try:
     from analysis_engine.public_suffix import public_suffix
     from analysis_engine.vt_client import get_url_report, get_file_report
     from analysis_engine.urlscan_client import scan_url as urlscan_scan
+    from analysis_engine.resource_chain import (
+        analyze as analyze_resource_chain,
+        select_for_reputation as select_resource_lookups,
+    )
     from analysis_engine.apk_analyzer import analyze_apk
     from analysis_engine.document_analyzer import analyze_document
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
@@ -845,6 +849,17 @@ def _select_inner_intel_targets(acc: dict, limit: int) -> list:
 
 
 _osint_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="osint")
+
+# VirusTotal lookups spent on a page's third-party hosts, over and above the one
+# spent on the page itself. The free tier allows 4 requests/minute, so this is a
+# hard ceiling rather than a preference — resource_chain ranks the candidates so
+# the small budget lands on the hosts most worth asking about, and returns fewer
+# than the budget when nothing clears the bar.
+RESOURCE_VT_BUDGET = int(os.environ.get("RESOURCE_VT_BUDGET", "2"))
+# abuse.ch has no comparable rate ceiling, so the bound here is only about not
+# posting an unbounded list from a page with hundreds of third parties.
+MAX_RESOURCE_INTEL_HOSTS = 20
+
 init_db()
 
 # One-time backfill of the indicator index from existing completed jobs
@@ -1149,6 +1164,73 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             if _is_suppressible_indicator(indicator):
                 print(f"Safe-domain intel suppressed: {key} match on bare reputable/boilerplate '{indicator}'")
                 osint_data[key] = {"found": False, "suppressed_safe_domain": indicator}
+
+        # ── Resource-chain enrichment (second wave) ───────────────────────────
+        # A page is its domain plus everything it loads. Reputation was only ever
+        # asked about the domain, so a clean wrapper serving a malicious
+        # third-party script scored zero while the offending host sat in the
+        # report as an unread chip.
+        #
+        # This has to be a second wave: the chain is not known until URLScan
+        # returns, and URLScan is itself one of the first-wave futures. The extra
+        # latency is small next to the scan that produced the list.
+        #
+        # Budgets are the whole design constraint. VirusTotal's free tier allows
+        # 4 requests/minute and the first wave already spent one or two, so the
+        # lookups go to the structurally most interesting hosts and stop. abuse.ch
+        # (ThreatFox/URLhaus) has no comparable ceiling, so the full host list
+        # goes there.
+        resource_chain = {"hosts": [], "third_party_domains": 0, "skipped": True}
+        if osint_data.get("urlscan"):
+            resource_chain = analyze_resource_chain(osint_data["urlscan"], scan_target_url or "")
+
+        if resource_chain.get("hosts"):
+            rc_futures, rc_hosts = {}, resource_chain["hosts"]
+            vt_targets = (
+                select_resource_lookups(resource_chain, RESOURCE_VT_BUDGET) if vt_key else []
+            )
+            for host in vt_targets:
+                rc_futures[("vt", host)] = _osint_executor.submit(
+                    get_url_report, f"https://{host}/", vt_key
+                )
+            intel_domains = [h["host"] for h in rc_hosts][:MAX_RESOURCE_INTEL_HOSTS]
+            intel_urls = (osint_data["urlscan"].get("resource_urls") or [])[:MAX_RESOURCE_INTEL_HOSTS]
+            if intel_domains:
+                rc_futures[("tf", "*")] = _osint_executor.submit(
+                    tf_check_iocs, [], intel_domains, [], None
+                )
+            if intel_urls:
+                rc_futures[("uh", "*")] = _osint_executor.submit(uh_check_urls, intel_urls)
+
+            rc_results = {}
+            for key, fut in rc_futures.items():
+                try:
+                    rc_results[key] = fut.result(timeout=45)
+                except Exception as e:
+                    print(f"Resource-chain lookup {key} failed: {e}")
+                    rc_results[key] = {"error": str(e)}
+
+            # Attach each verdict to the host it describes, so the report can name
+            # the offending third party instead of just moving the total.
+            for entry in rc_hosts:
+                vt = rc_results.get(("vt", entry["host"]))
+                if isinstance(vt, dict) and "error" not in vt and "stats" in vt:
+                    entry["virustotal"] = vt["stats"]
+                entry["checked"] = entry["host"] in vt_targets
+
+            for key, field in ((("tf", "*"), "matched_ioc"), (("uh", "*"), "matched_url")):
+                hit = rc_results.get(key) or {}
+                if not isinstance(hit, dict) or not hit.get("found"):
+                    continue
+                indicator = hit.get(field) or ""
+                if _is_suppressible_indicator(indicator):
+                    print(f"Resource-chain intel suppressed: bare reputable indicator '{indicator}'")
+                    continue
+                resource_chain.setdefault("intel_hits", []).append(
+                    {"source": "threatfox" if key[0] == "tf" else "urlhaus", **hit}
+                )
+
+        osint_data["resource_chain"] = resource_chain
 
         # ── Partial-intel detection ───────────────────────────────────────────
         # VirusTotal is the verdict-critical source: a completed VT lookup can add
