@@ -247,6 +247,7 @@ _LABEL_TO_AXIS = {
     "Shortcut Command Line":                    "behavioral_signals",
     "HTML Attachment":                          "behavioral_signals",
     "Extension Permissions":                    "behavioral_signals",
+    "Script Behaviour":                         "behavioral_signals",
     "ThreatFox IOC Match":                      "network_reputation",
     "URLhaus Malware Distribution":             "network_reputation",
     "AbuseIPDB Abuse Confidence":               "network_reputation",
@@ -665,6 +666,78 @@ def _check_extension(analysis_data: dict):
         score += 20
         reasons.append(
             f"Extension '{name}': can observe or alter every network request on every site."
+        )
+
+    return min(score, 100), reasons
+
+
+# Script dropper weights. The split is deliberate and load-bearing: the Windows
+# Script Host / ActiveX surface does not exist in a browser, so a delivered .js
+# reaching for WScript.Shell is a WSH program rather than a web script that
+# happens to be minified. Obfuscation, by contrast, describes every minified
+# library on the internet -- weighting it heavily would flag jQuery -- so it
+# scores almost nothing alone and earns its keep only next to a real behaviour.
+_SCRIPT_WEIGHTS = {
+    "adodb_stream":         30,   # writing downloaded bytes to disk
+    "amsi_bypass":          30,   # no legitimate use whatsoever
+    "wsh_shell":            25,
+    "powershell_launch":    25,
+    "registry_persistence": 20,
+    "scheduled_task":       20,
+    "bitsadmin":            20,
+    "shell_run":            15,
+    "hidden_window":        15,
+    "http_request":         10,
+    "eval_exec":            10,
+    "activex":              10,
+    "filesystem_object":     5,
+    # Obfuscation: reported, barely scored.
+    "char_code_assembly":    5,
+    "reverse_trick":         5,
+    "hex_escapes":           5,
+    "string_splicing":       0,   # true of most minified code
+    "base64_blob":           5,
+}
+
+# Downloading and then writing to disk is a dropper, whatever the wrapper looks
+# like. Either half alone is ordinary automation.
+_DROPPER_CHAIN = ({"http_request", "adodb_stream"}, 30,
+                  "downloads a file and writes it to disk — a dropper chain")
+_EXECUTION_CHAIN = ({"http_request", "shell_run"}, 20,
+                    "downloads content and executes a command")
+
+
+def _check_script(analysis_data: dict):
+    """Scores a script by what it would do, not by how unreadable it is.
+
+    Scripts were covered only by raw string matching and YARA, which finds the
+    plain ones and misses everything obfuscated -- and obfuscation is the norm,
+    because a script is text and rewriting text is free. PowerShell had YARA
+    rules; Windows Script Host (.js, .vbs, .wsf, .hta) had nothing at all.
+    """
+    script = analysis_data.get("script") or {}
+    if not script.get("is_script") or not script.get("codes"):
+        return 0, []
+
+    codes = set(script["codes"])
+    score = sum(_SCRIPT_WEIGHTS.get(code, 0) for code in codes)
+    kind = script.get("script_type") or "Script"
+    reasons = [f"{kind}: {finding}" for finding in script.get("findings") or []]
+
+    for required, bonus, description in (_DROPPER_CHAIN, _EXECUTION_CHAIN):
+        if required <= codes:
+            score += bonus
+            reasons.append(f"{kind}: {description}.")
+
+    # Obfuscation is a multiplier on a real behaviour, never a finding by itself.
+    obfuscation = codes & {"char_code_assembly", "hex_escapes", "reverse_trick", "base64_blob"}
+    behaviour = codes & {"wsh_shell", "adodb_stream", "http_request", "shell_run",
+                         "powershell_launch", "eval_exec"}
+    if obfuscation and behaviour:
+        score += 15
+        reasons.append(
+            f"{kind}: the code is obfuscated AND performs download or execution — "
+            f"deliberate concealment of what it does, not minification."
         )
 
     return min(score, 100), reasons
@@ -1214,6 +1287,8 @@ def calculate_score(analysis_data: dict) -> dict:
     record("HTML Attachment", s)
     s, r      = _check_extension(analysis_data);   heuristic_total += s; artifact_total += s; all_reasons += r
     record("Extension Permissions", s)
+    s, r      = _check_script(analysis_data);      heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Script Behaviour", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
     # this run — set by app/main.py. A partial scan is stored but never cached,

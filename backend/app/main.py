@@ -62,6 +62,7 @@ try:
     from analysis_engine.lnk_analyzer import analyze_lnk
     from analysis_engine.html_analyzer import analyze_html
     from analysis_engine.extension_analyzer import analyze_extension
+    from analysis_engine.script_analyzer import analyze_script
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
     from analysis_engine.malwarebazaar_client import check_hash as mb_check_hash
     from analysis_engine.threatfox_client import check_iocs as tf_check_iocs
@@ -607,6 +608,9 @@ def _new_archive_scan() -> dict:
         # wrapped in a ZIP is the same threat as one arriving directly, and the
         # permission scoring is the strongest Android signal available.
         "apks": [],
+        # (member name, script_info) for script members with findings. A .js or
+        # .vbs dropper is a standard second stage inside an archive or ISO.
+        "scripts": [],
         # (member name, extension_info) for browser extensions found inside.
         "extensions": [],
         # (member name, html_info) for HTML members with findings — a smuggling
@@ -813,6 +817,10 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     inner_html = analyze_html(inner_path, data=data, filename=display_name)
     if inner_html.get("is_html") and inner_html.get("codes"):
         acc["htmls"].append((display_name, inner_html))
+
+    inner_script = analyze_script(inner_path, data=data, filename=display_name)
+    if inner_script.get("is_script") and inner_script.get("codes"):
+        acc["scripts"].append((display_name, inner_script))
 
     # An APK inside an archive. Only ZIP members are asked, so this costs one
     # archive open on the members that could possibly be APKs and nothing on the
@@ -1140,6 +1148,20 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             html_info = dict(inner)
             html_info["matched_file"] = member_name
             print(f"Suspicious HTML inside archive member '{member_name}'")
+
+        # ── 1d-4. Script dropper ─────────────────────────────────────────────
+        # Scripts were covered only by raw string matching and YARA, which
+        # misses anything obfuscated -- and obfuscation is the norm, because a
+        # script is text and rewriting text is free.
+        script_info = analyze_script(file_path, data=raw_bytes, filename=original_filename)
+        if not script_info.get("is_script") and archive_scan.get("scripts"):
+            member_name, inner = archive_scan["scripts"][0]
+            script_info = dict(inner)
+            script_info["matched_file"] = member_name
+            print(f"Suspicious script inside archive member '{member_name}'")
+        for _u in script_info.get("urls") or []:
+            if _u not in (iocs.get("urls") or []):
+                iocs.setdefault("urls", []).append(_u)
 
         # ── 1e. Suspicious string patterns ───────────────────────────────────
         string_info = analyze_suspicious_strings(file_path, data=raw_bytes)
@@ -1506,6 +1528,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "lnk":      lnk_info,
             "html":     html_info,
             "extension": extension_info,
+            "script":   script_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────
