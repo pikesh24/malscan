@@ -29,13 +29,16 @@ class _Resp:
         return self._payload
 
 
-def _result(malicious=True, score=80):
+def _result(malicious=True, score=80, scanner_country="us"):
     return {
         "task": {"url": "http://evil.example/login", "uuid": "abc-123"},
         "page": {
             "title": "Sign in", "ip": "203.0.113.5",
             "country": "RU", "server": "nginx",
         },
+        # Where the browser ran. page.country above is where the server is —
+        # the two are unrelated, and only this one is under our control.
+        "scanner": {"country": scanner_country},
         "verdicts": {"overall": {"malicious": malicious, "score": score}},
         "lists": {"domains": ["evil.example", "cdn.evil.example", "tracker.example"]},
     }
@@ -45,6 +48,13 @@ def _result(malicious=True, score=80):
 def _no_sleeping(monkeypatch):
     """scan_url sleeps 6s then polls every 4s; tests must not actually wait."""
     monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+
+@pytest.fixture(autouse=True)
+def _default_country(monkeypatch):
+    """The pinned country is read from the environment, so a developer with
+    URLSCAN_COUNTRY set must not get different results than CI."""
+    monkeypatch.delenv("URLSCAN_COUNTRY", raising=False)
 
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
@@ -60,6 +70,7 @@ def test_malicious_verdict_is_parsed(monkeypatch):
     assert out["is_malicious"] is True, "verdicts.overall.malicious not mapped"
     assert out["verdict_score"] == 80
     assert out["page_country"] == "RU"
+    assert out["scan_country"] == "us", "scanner.country not mapped"
     assert "abc-123" in out["screenshot_url"]
     assert out["outgoing_domains"][0] == "evil.example"
 
@@ -214,3 +225,88 @@ def test_search_failure_falls_back_to_a_fresh_scan(monkeypatch):
     # get() is also used for polling, so this ends pending rather than parsed —
     # the point is that it did not raise and did submit.
     assert "error" in out or out.get("status") == "pending"
+
+
+# ── The pinned vantage point ─────────────────────────────────────────────────
+# Unpinned, URLScan chooses the exit node itself and a geolocalised page comes
+# back in a different language each run. These lock that down.
+
+def _capture_submit(monkeypatch):
+    """Runs scan_url past the fast path and returns the submitted payload."""
+    sent = {}
+
+    def post(*a, **k):
+        sent.update(k.get("json") or {})
+        return _Resp({"api": "x", "uuid": "u"})
+
+    monkeypatch.setattr(urlscan_client, "_find_recent_scan", lambda *a, **k: None)
+    monkeypatch.setattr(urlscan_client.requests, "post", post)
+    monkeypatch.setattr(urlscan_client.requests, "get", lambda *a, **k: _Resp(_result()))
+    return sent
+
+
+def test_fresh_scan_is_pinned_to_a_country(monkeypatch):
+    sent = _capture_submit(monkeypatch)
+    urlscan_client.scan_url("http://x.example/", "key")
+    assert sent.get("country") == urlscan_client.DEFAULT_SCAN_COUNTRY, \
+        "submitted without a country — URLScan picks the vantage point itself"
+
+
+def test_country_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("URLSCAN_COUNTRY", "DE")
+    sent = _capture_submit(monkeypatch)
+    urlscan_client.scan_url("http://x.example/", "key")
+    assert sent.get("country") == "de", "URLSCAN_COUNTRY ignored (or case-sensitive)"
+
+
+def test_unsupported_country_falls_back_instead_of_failing_the_scan(monkeypatch):
+    """URLScan rejects the submission outright for a country it has no node in,
+    so a typo in the env would silently cost every URL scan."""
+    monkeypatch.setenv("URLSCAN_COUNTRY", "ru")  # not a URLScan vantage point
+    sent = _capture_submit(monkeypatch)
+    urlscan_client.scan_url("http://x.example/", "key")
+    assert sent.get("country") == urlscan_client.DEFAULT_SCAN_COUNTRY
+
+
+def _search_hit(uuid="xyz"):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return {"results": [{"task": {"time": now},
+                         "result": f"https://urlscan.io/api/v1/result/{uuid}/",
+                         "_id": uuid}]}
+
+
+def test_scan_from_another_country_is_not_reused(monkeypatch):
+    """The whole point of the pin: an existing scan run from somewhere else is
+    the drift, not the fix."""
+    monkeypatch.setattr(
+        urlscan_client.requests, "get",
+        lambda url, **k: _Resp(_search_hit()) if "search" in url
+        else _Resp(_result(scanner_country="nl")))
+    submitted = {"called": False}
+
+    def post(*a, **k):
+        submitted["called"] = True
+        return _Resp({"api": "x", "uuid": "fresh"})
+    monkeypatch.setattr(urlscan_client.requests, "post", post)
+
+    urlscan_client.scan_url("http://evil.example/login", "key")
+    assert submitted["called"], "reused a scan run from the wrong country"
+
+
+def test_scan_with_no_recorded_country_is_not_reused(monkeypatch):
+    """Older scans carry no scanner block. Unknown is not a match."""
+    payload = _result()
+    del payload["scanner"]
+    monkeypatch.setattr(
+        urlscan_client.requests, "get",
+        lambda url, **k: _Resp(_search_hit()) if "search" in url else _Resp(payload))
+    submitted = {"called": False}
+
+    def post(*a, **k):
+        submitted["called"] = True
+        return _Resp({"api": "x", "uuid": "fresh"})
+    monkeypatch.setattr(urlscan_client.requests, "post", post)
+
+    urlscan_client.scan_url("http://evil.example/login", "key")
+    assert submitted["called"], "reused a scan of unknown origin"

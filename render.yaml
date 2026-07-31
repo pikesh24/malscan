@@ -52,6 +52,11 @@ services:
         sync: false
       # Set the enrichment API keys in the Render dashboard (Environment tab):
       #   VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY
+      # Country URLScan browses from (default "us"). Unset, URLScan picks the
+      # exit node itself and geolocalised sites render in a different language
+      # each run. Must be one of GET /api/v1/availableCountries/.
+      - key: URLSCAN_COUNTRY
+        value: us
 
 databases:
   - name: malscan-db
