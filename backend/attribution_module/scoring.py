@@ -245,6 +245,7 @@ _LABEL_TO_AXIS = {
     # What a shortcut would execute is a statement about behaviour, not about
     # the file's reputation or where it is hosted.
     "Shortcut Command Line":                    "behavioral_signals",
+    "HTML Attachment":                          "behavioral_signals",
     "ThreatFox IOC Match":                      "network_reputation",
     "URLhaus Malware Distribution":             "network_reputation",
     "AbuseIPDB Abuse Confidence":               "network_reputation",
@@ -538,6 +539,70 @@ def _check_lnk(analysis_data: dict):
     if args and score:
         # The command line is the evidence; show it rather than only describing it.
         reasons.append(f"Shortcut command line: {args[:200]}")
+
+    return min(score, 100), reasons
+
+
+# HTML attachment weights. Most individual signals here are deliberately near
+# zero: a "download" attribute and a scripted .click() describe every download
+# button on the web, and copy-to-clipboard is on every code snippet. What
+# separates a smuggling page from a normal one is the COMBINATION, so the
+# conjunctions below carry the weight — the same shape as the APK
+# overlay-plus-accessibility rule, which is the best-calibrated check here.
+_HTML_WEIGHTS = {
+    "smuggled_payload":       60,   # decoded to a real executable/archive: evidence, not a hint
+    "int_array_payload":      35,   # payload as integers, purely to dodge base64 checks
+    "meta_refresh_data_uri":  25,
+    "data_uri_octet_stream":  25,
+    "run_dialog_lure":        30,   # "press Windows+R" has no legitimate use in an attachment
+    "shell_command_text":     20,
+    "ms_save_blob":           15,   # legacy IE API, rare outside smuggling kits
+    "obfuscation":            10,
+    "large_encoded_blob":     10,
+    "blob_construction":       5,
+    "object_url":              5,
+    "base64_decode":           5,
+    "clipboard_write":         5,   # every documentation site has a copy button
+    "forced_download":         0,   # ordinary download buttons
+    "synthetic_click":         0,   # ordinary download buttons
+}
+
+
+def _check_html(analysis_data: dict):
+    """Scores an HTML attachment for smuggling and clipboard-injection lures.
+
+    An HTML attachment carries no macro and often no URL, so it used to read as
+    inert text: low entropy, no indicators, no YARA hit, Clear. The payload is
+    inside the page, assembled by script in the browser, which is precisely why
+    nothing on the network path ever sees it.
+    """
+    html = analysis_data.get("html") or {}
+    if not html.get("is_html") or not html.get("codes"):
+        return 0, []
+
+    codes = set(html["codes"])
+    score = sum(_HTML_WEIGHTS.get(code, 0) for code in codes)
+    reasons = [f"HTML: {finding}" for finding in html.get("findings") or []]
+
+    # Assembling a file in memory AND handing it to the user is the technique.
+    # Either half alone is ordinary.
+    if {"blob_construction", "object_url"} <= codes and codes & {"forced_download", "synthetic_click"}:
+        score += 30
+        reasons.append(
+            "HTML: builds a file in memory and downloads it without contacting the network — "
+            "the HTML smuggling pattern (MITRE T1027.006), which is invisible to gateways "
+            "that inspect downloads."
+        )
+
+    # A page that puts a command on the clipboard and tells the user to run it.
+    # No file is ever downloaded, so the page is the only artifact that exists.
+    if "clipboard_write" in codes and codes & {"run_dialog_lure", "shell_command_text"}:
+        score += 40
+        reasons.append(
+            "HTML: writes a command to the clipboard and instructs the user to run it — "
+            "the ClickFix / fake-CAPTCHA pattern. Nothing is downloaded, so no file scan "
+            "would ever see the payload."
+        )
 
     return min(score, 100), reasons
 
@@ -1069,6 +1134,8 @@ def calculate_score(analysis_data: dict) -> dict:
     # run is read out of its own structure rather than inferred.
     s, r      = _check_lnk(analysis_data);         heuristic_total += s; artifact_total += s; all_reasons += r
     record("Shortcut Command Line", s)
+    s, r      = _check_html(analysis_data);        heuristic_total += s; artifact_total += s; all_reasons += r
+    record("HTML Attachment", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
     # this run — set by app/main.py. A partial scan is stored but never cached,

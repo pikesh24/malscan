@@ -60,6 +60,7 @@ try:
     from analysis_engine.apk_analyzer import analyze_apk
     from analysis_engine.document_analyzer import analyze_document
     from analysis_engine.lnk_analyzer import analyze_lnk
+    from analysis_engine.html_analyzer import analyze_html
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
     from analysis_engine.malwarebazaar_client import check_hash as mb_check_hash
     from analysis_engine.threatfox_client import check_iocs as tf_check_iocs
@@ -605,6 +606,9 @@ def _new_archive_scan() -> dict:
         # wrapped in a ZIP is the same threat as one arriving directly, and the
         # permission scoring is the strongest Android signal available.
         "apks": [],
+        # (member name, html_info) for HTML members with findings — a smuggling
+        # page is routinely zipped so the mail gateway sees an archive instead.
+        "htmls": [],
         # (member name, lnk_info) for shortcuts with findings. A malicious .lnk
         # almost always arrives inside a container, because that is what strips
         # the mark-of-the-web warning.
@@ -802,6 +806,10 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     inner_lnk = analyze_lnk(inner_path, data=data)
     if inner_lnk.get("is_lnk") and inner_lnk.get("suspicious"):
         acc["lnks"].append((display_name, inner_lnk))
+
+    inner_html = analyze_html(inner_path, data=data, filename=display_name)
+    if inner_html.get("is_html") and inner_html.get("codes"):
+        acc["htmls"].append((display_name, inner_html))
 
     # An APK inside an archive. Only ZIP members are asked, so this costs one
     # archive open on the members that could possibly be APKs and nothing on the
@@ -1089,6 +1097,17 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             lnk_iocs = extract_iocs(file_path, data=(lnk_info.get("arguments") or "").encode())
             for k in ("ips", "domains", "urls"):
                 iocs[k] = sorted(set((iocs.get(k) or []) + (lnk_iocs.get(k) or [])))
+
+        # ── 1d-3. HTML attachment ────────────────────────────────────────────
+        # An HTML attachment carries no macro and often no URL, so it read as
+        # inert text. The payload is inside the page and assembled by script in
+        # the browser, which is exactly why nothing on the network path sees it.
+        html_info = analyze_html(file_path, data=raw_bytes, filename=original_filename)
+        if not html_info.get("is_html") and archive_scan.get("htmls"):
+            member_name, inner = archive_scan["htmls"][0]
+            html_info = dict(inner)
+            html_info["matched_file"] = member_name
+            print(f"Suspicious HTML inside archive member '{member_name}'")
 
         # ── 1e. Suspicious string patterns ───────────────────────────────────
         string_info = analyze_suspicious_strings(file_path, data=raw_bytes)
@@ -1451,6 +1470,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "apk":      apk_info,
             "document": doc_info,
             "lnk":      lnk_info,
+            "html":     html_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────
