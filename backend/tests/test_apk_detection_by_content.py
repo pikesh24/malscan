@@ -169,3 +169,46 @@ def test_a_direct_apk_is_not_overridden_by_a_nested_one(client):
     assert results["apk_info"]["package"] == "com.ordinary.notes", (
         "a nested APK's manifest replaced the submitted APK's own"
     )
+
+
+# ── NFC relay (2026 contactless-theft pattern) ───────────────────────────────
+
+NFC_RELAY_MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="{ANDROID_NS}" package="com.fake.pay">
+  <uses-permission android:name="android.permission.NFC"/>
+  <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"/>
+  <application android:label="Contactless Helper"/>
+</manifest>
+""".encode()
+
+NFC_ONLY_MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="{ANDROID_NS}" package="com.transit.card">
+  <uses-permission android:name="android.permission.NFC"/>
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <application android:label="Transit Card"/>
+</manifest>
+""".encode()
+
+
+def test_nfc_alone_does_not_score(client):
+    """Payment, transit and access-badge apps all use NFC legitimately — on its
+    own it must carry no weight at all."""
+    results = _scan(client, _apk_bytes(NFC_ONLY_MANIFEST), "transit.apk")
+
+    assert results["apk_info"]["is_apk"] is True
+    assert _apk_points(results) == 0, "an ordinary NFC app was scored"
+
+
+def test_nfc_is_reported_even_though_it_does_not_score(client):
+    """It was previously invisible; an analyst should still see it."""
+    results = _scan(client, _apk_bytes(NFC_ONLY_MANIFEST), "transit.apk")
+    assert "android.permission.NFC" in results["apk_info"]["dangerous_permissions"]
+
+
+def test_nfc_with_accessibility_is_the_relay_pattern(client):
+    results = _scan(client, _apk_bytes(NFC_RELAY_MANIFEST), "helper.apk")
+
+    assert _apk_points(results) > 0
+    assert any("contactless-relay" in r for r in results.get("reasons") or []), (
+        "the NFC relay combination was not called out"
+    )

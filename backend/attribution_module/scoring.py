@@ -842,6 +842,19 @@ def _check_apk_permissions(apk_data):
             "APK combines screen overlay with accessibility control — the exact pattern used by "
             "banking-overlay trojans to capture credentials."
         )
+    # NFC alone is unremarkable: payment, transit and access-badge apps all use
+    # it. Paired with the ability to drive the screen or fake one, it is the
+    # contactless-relay pattern that emerged in 2026 banking malware, where the
+    # app reads a card and relays it to an attacker's terminal in real time.
+    if "android.permission.NFC" in perm_set and perm_set & {
+        "android.permission.BIND_ACCESSIBILITY_SERVICE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+    }:
+        score += 20
+        reasons.append(
+            "APK combines NFC access with screen overlay or accessibility control — the "
+            "contactless-relay pattern, where card data is read and forwarded in real time."
+        )
 
     # Permission volume no longer scores, but the report still says what the app
     # asked for. Suppressing the score is not a reason to suppress the context.
