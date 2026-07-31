@@ -1359,7 +1359,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 return False
             if "error" in res:
                 return True
-            return (res.get("vt_status") or res.get("status")) in ("queued", "pending", "error")
+            # 'rate_limited' is distinct from 'queued' — the analysis may well be
+            # finished and we were merely throttled off it — but both mean no
+            # verdict was obtained, which is what makes a scan partial.
+            return (res.get("vt_status") or res.get("status")) in (
+                "queued", "pending", "error", "rate_limited",
+            )
 
         # Scoped to the lookup that describes THE ARTIFACT: vt_file for an upload,
         # vt_url for a submitted URL. A VT lookup on a URL merely *embedded* in a
