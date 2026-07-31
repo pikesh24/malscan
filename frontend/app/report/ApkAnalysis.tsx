@@ -35,7 +35,7 @@ export default function ApkAnalysis({ apkInfo }: ApkAnalysisProps) {
         <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2">
           <Smartphone size={14} /> Android APK Analysis
         </h3>
-        {apkInfo.dangerous_permissions?.length > 0 && (
+        {apkInfo.dangerous_permissions && apkInfo.dangerous_permissions.length > 0 && (
           <span className="text-[9px] bg-red-900 text-red-300 px-2 py-1 font-mono uppercase tracking-widest rounded-sm flex items-center gap-1">
             <AlertCircle size={12} />
             {apkInfo.dangerous_permissions.length} High Risk
@@ -143,7 +143,7 @@ export default function ApkAnalysis({ apkInfo }: ApkAnalysisProps) {
           <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
             <p className="text-[9px] text-red-700 font-semibold mb-2">⚠ High-Risk Permissions Detected</p>
             <p className="text-[8px] text-red-600 leading-relaxed">
-              This app has {apkInfo.dangerous_permissions.length} dangerous permission{apkInfo.dangerous_permissions.length > 1 ? "s" : ""}. Hover over each permission to see what it can do. Legitimate apps rarely need all of these.
+              This app has {apkInfo.dangerous_permissions?.length ?? 0} dangerous permission{(apkInfo.dangerous_permissions?.length ?? 0) > 1 ? "s" : ""}. Hover over each permission to see what it can do. Legitimate apps rarely need all of these.
             </p>
           </div>
         )}
