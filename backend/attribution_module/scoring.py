@@ -1086,9 +1086,20 @@ def calculate_score(analysis_data: dict) -> dict:
     # Deliberately narrow: Malicious/Suspicious are NOT downgraded. Missing
     # intel did not prevent those detections, and relabelling a real detection
     # as "Inconclusive" would bury a true positive — the worse failure.
+    # Why a Clear was withheld, in the report's own words. The presentation
+    # layer used to hard-code the VirusTotal explanation for every Inconclusive
+    # verdict, which would have made an unexaminable archive claim that
+    # VirusTotal was down.
+    inconclusive_reason = None
+
     if intel_partial:
         if verdict == "Clear":
             verdict = "Inconclusive"
+            inconclusive_reason = (
+                "This scan did not complete — VirusTotal, the verdict-critical source, "
+                "was unavailable. No indicators were found, but that is not the same as "
+                "safe. Re-scan before trusting this artifact."
+            )
             all_reasons.append(
                 "⚠ INCONCLUSIVE — not a clean bill of health. No indicators were found, "
                 "but threat-intelligence was incomplete on this scan: VirusTotal (the "
@@ -1102,12 +1113,39 @@ def calculate_score(analysis_data: dict) -> dict:
                 "provisional and may change — re-scan to refresh it."
             )
 
+    # Same honesty rule, different cause: content that could not be examined at
+    # all. A password-protected archive yields no members, so every per-file
+    # detector is bypassed and "no indicators found" describes a scan that never
+    # saw the files. Unlike the intel case, re-scanning will not help — the
+    # password is needed — so the wording asks for that instead.
+    #
+    # Ordered after the intel branch and gated on Clear for the same reason it
+    # is: a real detection must never be relabelled Inconclusive and buried.
+    unexaminable = analysis_data.get("unexaminable") or []
+    if unexaminable and verdict == "Clear":
+        verdict = "Inconclusive"
+        listed = ", ".join(unexaminable[:3]) + (" …" if len(unexaminable) > 3 else "")
+        inconclusive_reason = (
+            f"The contents of this archive are password-protected and could not be "
+            f"extracted, so the {len(unexaminable)} file(s) inside were never scanned. "
+            f"Nothing was found because nothing could be examined — that is not the "
+            f"same as safe. Unpack it with the password and scan the contents."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — the archive is password-protected, so its "
+            f"{len(unexaminable)} member(s) could not be extracted or scanned: {listed}. "
+            f"No hash lookup, YARA rule or file analysis ran against them. This is a "
+            f"known way of moving a sample past scanners — re-submit the contents "
+            f"unpacked to get a real verdict."
+        )
+
     return {
         "score":       final_score,
         "verdict":     verdict,
         "family":      family or "Unknown",
         "attribution": attribution or "Unattributed",
         "partial":     intel_partial,
+        "inconclusive_reason": inconclusive_reason,
         "reasons":     all_reasons,
         "indicators": {
             "ips":     iocs.get("ips", []),

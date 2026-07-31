@@ -137,6 +137,12 @@ function ReportContent() {
     const resourceChain = reportData?.osint_summary?.resource_chain || null
     const apkInfo = reportData?.apk_info || null
     const archiveContents = reportData?.archive_contents || []
+    // Caveats about what could NOT be examined. The backend has emitted these
+    // for a while but this page never read them, so a partly-scanned archive
+    // looked identical to a fully-scanned one.
+    const archiveEncrypted = reportData?.archive_encrypted || []
+    const archiveTruncated = reportData?.archive_truncated || null
+    const archiveUnreadable = reportData?.archive_unreadable || []
     const geoLat = reportData?.osint_summary?.lat ?? null
     const geoLon = reportData?.osint_summary?.lon ?? null
     const geoCity = reportData?.osint_summary?.city || ""
@@ -597,13 +603,36 @@ function ReportContent() {
                         </motion.div>
                     )}
 
-                    {/* ARCHIVE CONTENTS */}
-                    {archiveContents.length > 0 && (
+                    {/* ARCHIVE CONTENTS — also shown when nothing could be extracted,
+                        which is exactly when the reader needs to know why. */}
+                    {(archiveContents.length > 0 || archiveEncrypted.length > 0 || archiveTruncated || archiveUnreadable.length > 0) && (
                         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.25 }} className="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden print:break-inside-avoid print:shadow-none">
                             <div className="p-4 border-b border-gray-200 bg-gray-50">
-                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Archive size={14}/> Archive Contents ({archiveContents.length} files)</h3>
+                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Archive size={14}/> Archive Contents {archiveContents.length > 0 ? `(${archiveContents.length} files)` : "(not examined)"}</h3>
                             </div>
                             <div className="p-4">
+                                {archiveEncrypted.length > 0 && (
+                                    <div className="mb-4 p-3 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                                        <div className="font-bold mb-1">This archive is password-protected.</div>
+                                        {archiveEncrypted.length} file(s) could not be extracted, so they were <strong>not scanned for malware</strong> —
+                                        no hash lookup, no YARA rules and no file analysis ran against them. A clean result here means the
+                                        contents could not be examined, not that they are safe.
+                                        <div className="mt-2 font-mono text-[10px] text-amber-800 break-all">
+                                            {archiveEncrypted.slice(0, 8).join(", ")}{archiveEncrypted.length > 8 ? ` +${archiveEncrypted.length - 8} more` : ""}
+                                        </div>
+                                    </div>
+                                )}
+                                {archiveTruncated && (
+                                    <div className="mb-4 p-3 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                                        Only part of this archive was examined — {archiveTruncated}.
+                                    </div>
+                                )}
+                                {archiveUnreadable.length > 0 && (
+                                    <div className="mb-4 p-3 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                                        {archiveUnreadable.length} file(s) could not be read after extraction, commonly because antivirus
+                                        quarantined them — they were <strong>not analysed</strong>.
+                                    </div>
+                                )}
                                 <div className="space-y-1.5 max-h-64 print:max-h-none overflow-y-auto print:overflow-visible pr-2 print:pr-0">
                                     {archiveContents.map((f: any, i: number) => (
                                         <div key={i} className="flex items-center justify-between font-mono text-[10px] py-2 px-3 bg-gray-50 border border-gray-100 rounded-md">

@@ -500,6 +500,21 @@ def _member_name(m) -> str:
 def _member_size(m) -> int:
     return getattr(m, "file_size", 0) or 0
 
+def _is_encrypted_member_error(exc: Exception) -> bool:
+    """True when a member failed to extract because it is password-protected.
+
+    Matched on type name and message rather than a specific exception class:
+    zipfile raises a bare RuntimeError("... is encrypted, password required for
+    extraction"), while rarfile raises PasswordRequired or RarWrongPassword —
+    and rarfile is an optional dependency, so it cannot be referenced directly
+    here without coupling this check to whether RAR support is installed.
+    """
+    if "password" in type(exc).__name__.lower() or "encrypt" in type(exc).__name__.lower():
+        return True
+    message = str(exc).lower()
+    return "password" in message or "encrypted" in message
+
+
 def _member_is_dir(m) -> bool:
     is_dir = getattr(m, "is_dir", None)
     if callable(is_dir):
@@ -554,6 +569,10 @@ def _new_archive_scan() -> dict:
         "documents": [],
         "hash_candidates": [],
         "unreadable": [],
+        # Members that could not be extracted because the archive is
+        # password-protected. Distinct from `unreadable`, which is for files
+        # that DID extract and then failed to read (usually AV quarantine).
+        "encrypted": [],
         "is_pe": False,
         "imphash": None,
     }
@@ -635,7 +654,18 @@ def _scan_archive_tree(file_path: str, acc: dict, depth: int = 1) -> None:
             except Exception as me:
                 # A backend that can't decompress one member (e.g. an
                 # unsupported RAR compression) must not abort the scan.
-                print(f"Archive member '{member_name}' extraction failed: {me}")
+                if _is_encrypted_member_error(me):
+                    # Password-protected. Every inner detector is bypassed —
+                    # no hash for MalwareBazaar/VirusTotal, no YARA, no PE or
+                    # document analysis — so the scan MUST say it could not
+                    # look inside rather than let "nothing found" read as
+                    # "nothing there". Encrypting the payload and mailing the
+                    # password separately is a standard way of getting a
+                    # sample past exactly this kind of scanner.
+                    acc["encrypted"].append(member_name)
+                    print(f"Archive member '{member_name}' is password-protected — not scanned")
+                else:
+                    print(f"Archive member '{member_name}' extraction failed: {me}")
                 continue
             if written is None:
                 acc["truncated"] = f"size limit reached ({MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB decompressed)"
@@ -1273,6 +1303,10 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "archive_hashes": archive_scan["hash_candidates"],
             "submitted_url": submitted_url,
             "intel_partial": intel_partial,
+            # Members that exist but could not be examined. Scoring turns a
+            # would-be "Clear" into "Inconclusive" on the strength of this: a
+            # scan that never saw the files cannot vouch for them.
+            "unexaminable": archive_scan.get("encrypted") or [],
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "pe_sections":         pe_info.get("pe_sections", []),
@@ -1320,12 +1354,18 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         score_data["pe_sections"] = pe_info.get("pe_sections", [])
         if archive_contents:
             score_data["archive_contents"] = archive_contents
-            # A truncated archive was only partly examined — say so in the report
-            # rather than letting "nothing found" imply "nothing there".
-            if archive_scan.get("truncated"):
-                score_data["archive_truncated"] = archive_scan["truncated"]
-            if archive_scan.get("unreadable"):
-                score_data["archive_unreadable"] = archive_scan["unreadable"]
+        # Deliberately OUTSIDE the block above. These say "part of this archive
+        # was not examined", and the worst case for that is an archive where
+        # NOTHING was examined — which leaves archive_contents empty and, while
+        # they were gated on it, silently dropped the warning in exactly the
+        # case that most needed it. A password-protected archive extracts no
+        # members at all, so it never once produced a caveat.
+        if archive_scan.get("truncated"):
+            score_data["archive_truncated"] = archive_scan["truncated"]
+        if archive_scan.get("unreadable"):
+            score_data["archive_unreadable"] = archive_scan["unreadable"]
+        if archive_scan.get("encrypted"):
+            score_data["archive_encrypted"] = archive_scan["encrypted"]
         if apk_info.get("is_apk"):
             score_data["apk_info"] = apk_info
         if doc_info and doc_info.get("doc_type") not in (None, "unknown"):
