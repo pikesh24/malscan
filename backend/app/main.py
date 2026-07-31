@@ -8,6 +8,10 @@ pipeline (process_scan_job), and the status / report endpoints.
 import hashlib, os, re, uuid, sys, time, zipfile, tempfile, shutil
 import asyncio
 from collections import defaultdict, deque
+
+# Windows Playwright fix: use ProactorEventLoop for subprocess support
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse

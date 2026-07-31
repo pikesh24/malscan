@@ -7,11 +7,9 @@ import { apiUrl } from "../../lib/config"
 
 // --- BACKGROUND PLACEHOLDER ---
 const BackgroundMedia = () => (
-  <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-    <div className="absolute inset-0 bg-[#121212] opacity-90"></div>
-    <div className="absolute inset-0 opacity-20" 
-         style={{ backgroundImage: 'linear-gradient(rgba(255,59,0,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,59,0,0.1) 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
-    </div>
+  <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-gray-200 via-[#F5F5F3] to-[#F5F5F3] opacity-50"></div>
+    <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/graphy.png')] opacity-[0.05]"></div>
   </div>
 )
 
@@ -108,41 +106,65 @@ function AnalysisContent() {
   };
 
   return (
-    <div className="h-screen bg-[#0A0A0A] text-white font-mono flex relative overflow-hidden">
+    <div className="h-screen bg-[#F5F5F3] text-[#121212] font-sans flex relative overflow-hidden selection:bg-[#FF3B00] selection:text-white">
       <BackgroundMedia />
       
       {/* MAIN CONTENT AREA */}
-      <div className="flex-1 flex flex-col justify-center items-center relative z-10">
-        <div className="w-full max-w-2xl px-6">
-            <div className="flex justify-between items-end mb-8">
-                <div>
-                  <h2 className="text-xs font-bold tracking-widest text-[#666]">JOB ID</h2>
-                  <p className="text-2xl text-[#FF3B00]">{id.toUpperCase()}</p>
+      <div className="flex-1 overflow-y-auto relative z-10">
+        <div className="min-h-full flex flex-col justify-center items-center py-12">
+            <div className="w-full max-w-4xl px-4 md:px-8">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 md:gap-0 mb-8">
+                    <div className="max-w-full overflow-hidden w-full md:w-auto">
+                      <h2 className="text-[10px] font-bold tracking-[0.3em] uppercase text-gray-500 mb-1">JOB ID</h2>
+                      <p className="text-xl sm:text-2xl md:text-3xl font-black text-[#121212] tracking-tight truncate">{id.toUpperCase()}</p>
+                    </div>
+                    <div className="text-left md:text-right shrink-0">
+                      <h2 className="text-[10px] font-bold tracking-[0.3em] uppercase text-gray-500 mb-1">STATUS</h2>
+                      <p className="text-xl font-bold text-[#FF3B00] animate-pulse">{realStatus}</p>
+                    </div>
                 </div>
-                <div className="text-right">
-                  <h2 className="text-xs font-bold tracking-widest text-[#666]">STATUS</h2>
-                  <p className="text-lg animate-pulse">{realStatus}</p>
-                </div>
-            </div>
             
-            <div className="flex justify-between items-end mb-2">
-                <p className="text-sm text-[#888]">Estimated time remaining: <span className="text-white font-semibold">{formatETA(etaSeconds)}</span></p>
-                <p className="text-sm text-[#888]">Progress: <span className="text-[#FF3B00] font-bold">{Math.floor(progress)}%</span></p>
+            <div className="flex justify-between items-end mb-3">
+                <p className="font-mono text-[10px] text-gray-400 tracking-widest uppercase">EST. TIME: <span className="text-[#121212] font-bold">{formatETA(etaSeconds)}</span></p>
+                <p className="font-mono text-[10px] text-gray-400 tracking-widest uppercase">PROGRESS: <span className="text-[#121212] font-bold">{Math.floor(progress)}%</span></p>
             </div>
-            <div className="w-full h-2 bg-[#222] mb-12 relative overflow-hidden border border-[#333]">
-                <motion.div className="absolute top-0 left-0 h-full bg-[#FF3B00]" style={{ width: `${progress}%` }} transition={{ ease: "linear" }} />
+            <div className="w-full h-4 bg-white border-2 border-[#121212] mb-12 relative overflow-hidden shadow-[0_10px_20px_rgba(0,0,0,0.05)]">
+                <motion.div 
+                    className="absolute top-0 left-0 h-full bg-[#FF3B00]" 
+                    style={{ width: `${progress}%` }} 
+                    transition={{ ease: "linear" }} 
+                />
             </div>
 
-            <div className="space-y-2 h-64 overflow-y-auto border border-[#333] p-4 bg-[#000]/50 backdrop-blur-sm">
+            <div className="space-y-0 bg-white border-2 border-[#121212] shadow-[0_20px_50px_rgba(0,0,0,0.1)]">
                 {steps.map((step, i) => (
-                    <motion.div key={step} initial={{ opacity: 0, x: -10 }} animate={{ opacity: i === currentStep ? 1 : 0.4, x: 0, color: i === currentStep ? "#FFF" : "#666" }} className="flex items-center gap-3 text-xs tracking-wider">
-                        <span className="w-4 text-[#FF3B00]">{i === currentStep ? ">" : i < currentStep ? "✓" : ""}</span><span>{step}</span>{i === currentStep && <span className="animate-blink">_</span>}
+                    <motion.div 
+                        key={step} 
+                        initial={{ opacity: 0, y: 10 }} 
+                        animate={{ 
+                            opacity: i <= currentStep ? 1 : 0.4, 
+                            y: 0,
+                            backgroundColor: i === currentStep ? "#F9F9F9" : "transparent"
+                        }} 
+                        className={`flex items-center gap-3 md:gap-4 px-4 py-3 md:px-6 md:py-4 border-b border-gray-100 last:border-b-0 transition-colors ${i === currentStep ? 'border-l-4 border-l-[#FF3B00]' : 'border-l-4 border-l-transparent'}`}
+                    >
+                        <div className="w-4 flex justify-center">
+                            {i < currentStep ? (
+                                <span className="text-[#121212] font-bold">✓</span>
+                            ) : i === currentStep ? (
+                                <span className="w-2 h-2 bg-[#FF3B00] rounded-sm animate-pulse"></span>
+                            ) : (
+                                <span className="text-gray-300">-</span>
+                            )}
+                        </div>
+                        <span className={`font-mono text-xs tracking-widest uppercase ${i === currentStep ? "text-[#121212] font-bold" : "text-gray-500"}`}>{step}</span>
                     </motion.div>
                 ))}
             </div>
         </div>
       </div>
     </div>
+  </div>
   )
 }
 

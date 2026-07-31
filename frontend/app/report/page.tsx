@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
-import { ShieldAlert, Download, Share2, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Package, Archive, Smartphone, MapPin, Network, Activity, PieChart, Radar, HelpCircle, AlertTriangle } from "lucide-react"
+import { ShieldAlert, Download, Share2, TerminalSquare, Camera, ExternalLink, Home, Info, Check, Package, Archive, MapPin, Network, Activity, PieChart, Radar, HelpCircle, AlertTriangle } from "lucide-react"
 import dynamic from "next/dynamic"
 import { apiUrl } from "../../lib/config"
 import GraphWidget from "./GraphWidget"
@@ -11,6 +11,7 @@ import RiskRadar from "./RiskRadar"
 import EntropyChart from "./EntropyChart"
 import VTDonut from "./VTDonut"
 import ScoreComposition from "./ScoreComposition"
+import ApkAnalysis from "./ApkAnalysis"
 
 const GeoMap = dynamic(() => import("./GeoMap"), { ssr: false, loading: () => <div className="w-full h-[420px] bg-[#0d1117] flex items-center justify-center font-mono text-xs text-gray-600">LOADING MAP...</div> })
 
@@ -560,42 +561,7 @@ function ReportContent() {
                     )}
 
                     {/* APK PERMISSIONS */}
-                    {apkInfo && apkInfo.is_apk && (apkInfo.package || apkInfo.app_label || apkInfo.dangerous_permissions?.length > 0 || apkInfo.permissions?.length > 0) && (
-                        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.22 }} className="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden print:break-inside-avoid print:shadow-none">
-                            <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                                <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Smartphone size={14}/> Android APK Analysis</h3>
-                                {apkInfo.dangerous_permissions?.length > 0 && <span className="text-[9px] bg-amber-900 text-amber-400 px-2 py-1 font-mono uppercase tracking-widest rounded-sm">{apkInfo.dangerous_permissions.length} DANGEROUS</span>}
-                            </div>
-                            <div className="p-4">
-                                {(apkInfo.package || apkInfo.app_label) && (
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 font-mono text-[10px] mb-4 bg-gray-50 p-3 rounded-md border border-gray-100">
-                                        {apkInfo.package && <div className="min-w-0"><span className="text-gray-400 uppercase">Package:</span> <span className="text-gray-700 block truncate" title={apkInfo.package}>{apkInfo.package}</span></div>}
-                                        {apkInfo.app_label && <div className="min-w-0"><span className="text-gray-400 uppercase">App Name:</span> <span className="text-gray-700 block truncate" title={apkInfo.app_label}>{apkInfo.app_label}</span></div>}
-                                    </div>
-                                )}
-                                {apkInfo.dangerous_permissions?.length > 0 && (
-                                    <div className="border-t border-gray-100 pt-3">
-                                        <span className="text-[10px] font-mono text-[#FF3B00] uppercase font-bold">Dangerous Permissions:</span>
-                                        <div className="flex flex-wrap gap-2 mt-2">
-                                            {apkInfo.dangerous_permissions.map((p: string) => (
-                                                <span key={p} className="text-[9px] bg-red-50 border border-red-200 text-red-700 px-2 py-1 rounded-md font-mono">{p.replace('android.permission.', '')}</span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                {apkInfo.permissions?.length > 0 && (
-                                    <div className="border-t border-gray-100 pt-3 mt-3">
-                                        <span className="text-[10px] font-mono text-gray-400 uppercase">All Permissions ({apkInfo.permissions.length}):</span>
-                                        <div className="flex flex-wrap gap-1.5 mt-2 max-h-32 print:max-h-none overflow-y-auto print:overflow-visible">
-                                            {apkInfo.permissions.map((p: string) => (
-                                                <span key={p} className="text-[9px] bg-gray-100 px-2 py-1 rounded-md font-mono text-gray-600">{p.replace('android.permission.', '')}</span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </motion.div>
-                    )}
+                    {apkInfo && <ApkAnalysis apkInfo={apkInfo} />}
 
                     {/* ARCHIVE CONTENTS */}
                     {archiveContents.length > 0 && (
