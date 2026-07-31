@@ -246,6 +246,7 @@ _LABEL_TO_AXIS = {
     # the file's reputation or where it is hosted.
     "Shortcut Command Line":                    "behavioral_signals",
     "HTML Attachment":                          "behavioral_signals",
+    "Extension Permissions":                    "behavioral_signals",
     "ThreatFox IOC Match":                      "network_reputation",
     "URLhaus Malware Distribution":             "network_reputation",
     "AbuseIPDB Abuse Confidence":               "network_reputation",
@@ -602,6 +603,68 @@ def _check_html(analysis_data: dict):
             "HTML: writes a command to the clipboard and instructs the user to run it — "
             "the ClickFix / fake-CAPTCHA pattern. Nothing is downloaded, so no file scan "
             "would ever see the payload."
+        )
+
+    return min(score, 100), reasons
+
+
+# Browser extension weights. Broad permissions are genuinely common among
+# legitimate extensions -- ad blockers need to see every request, password
+# managers need every site -- so single permissions are weighted low and the
+# combinations carry the verdict, as with the APK and HTML checks.
+_EXTENSION_WEIGHTS = {
+    "perm_debugger":        35,   # full control of every page; almost never legitimate
+    "perm_nativeMessaging": 30,   # bridges the browser sandbox to a local program
+    "remote_code":          30,   # what runs is not what was reviewed
+    "perm_proxy":           25,
+    "perm_management":      20,   # can disable other extensions, including security ones
+    "unsafe_csp":           15,
+    "perm_cookies":         15,
+    "perm_webRequestBlocking": 10,
+    "perm_clipboardRead":   10,
+    "perm_webRequest":       5,
+    "perm_declarativeNetRequest": 5,
+    "perm_history":          5,
+    "perm_tabs":             5,
+    "perm_downloads":        5,
+    "perm_scripting":        5,
+    "perm_privacy":          5,
+    "perm_contentSettings":  5,
+    "all_sites":             5,   # true of most useful extensions on its own
+}
+
+
+def _check_extension(analysis_data: dict):
+    """Scores a browser extension by what its manifest asks to reach.
+
+    A .crx is a ZIP, so the archive walk already hashed its members and found
+    nothing interesting -- the manifest is small JSON and the payload is
+    ordinary JavaScript. The permission model was never read, exactly as the APK
+    manifest was not read before that path was fixed.
+    """
+    ext = analysis_data.get("extension") or {}
+    if not ext.get("is_extension") or not ext.get("codes"):
+        return 0, []
+
+    codes = set(ext["codes"])
+    score = sum(_EXTENSION_WEIGHTS.get(code, 0) for code in codes)
+    name = ext.get("name") or "extension"
+    reasons = [f"Extension '{name}': {finding}" for finding in ext.get("findings") or []]
+
+    # Every site plus cookies is a live-session harvester: a stolen session token
+    # skips the login entirely, so multi-factor authentication does not help.
+    if "all_sites" in codes and "perm_cookies" in codes:
+        score += 35
+        reasons.append(
+            f"Extension '{name}': can read cookies on every site the user visits — enough to "
+            f"lift live session tokens, which bypasses multi-factor login."
+        )
+
+    # Reading every request across every site is wholesale traffic interception.
+    if "all_sites" in codes and codes & {"perm_webRequest", "perm_webRequestBlocking"}:
+        score += 20
+        reasons.append(
+            f"Extension '{name}': can observe or alter every network request on every site."
         )
 
     return min(score, 100), reasons
@@ -1136,6 +1199,8 @@ def calculate_score(analysis_data: dict) -> dict:
     record("Shortcut Command Line", s)
     s, r      = _check_html(analysis_data);        heuristic_total += s; artifact_total += s; all_reasons += r
     record("HTML Attachment", s)
+    s, r      = _check_extension(analysis_data);   heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Extension Permissions", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
     # this run — set by app/main.py. A partial scan is stored but never cached,

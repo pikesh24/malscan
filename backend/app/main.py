@@ -61,6 +61,7 @@ try:
     from analysis_engine.document_analyzer import analyze_document
     from analysis_engine.lnk_analyzer import analyze_lnk
     from analysis_engine.html_analyzer import analyze_html
+    from analysis_engine.extension_analyzer import analyze_extension
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
     from analysis_engine.malwarebazaar_client import check_hash as mb_check_hash
     from analysis_engine.threatfox_client import check_iocs as tf_check_iocs
@@ -606,6 +607,8 @@ def _new_archive_scan() -> dict:
         # wrapped in a ZIP is the same threat as one arriving directly, and the
         # permission scoring is the strongest Android signal available.
         "apks": [],
+        # (member name, extension_info) for browser extensions found inside.
+        "extensions": [],
         # (member name, html_info) for HTML members with findings — a smuggling
         # page is routinely zipped so the mail gateway sees an archive instead.
         "htmls": [],
@@ -818,6 +821,9 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     # DEX strings — while still looking thoroughly scanned.
     try:
         if zipfile.is_zipfile(inner_path):
+            inner_ext = analyze_extension(inner_path)
+            if inner_ext.get("is_extension") and inner_ext.get("codes"):
+                acc["extensions"].append((display_name, inner_ext))
             inner_apk = analyze_apk(inner_path)
             if inner_apk.get("is_apk"):
                 acc["apks"].append((display_name, inner_apk))
@@ -1075,6 +1081,19 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             apk_info = dict(inner_apk)
             apk_info["matched_file"] = member_name
             print(f"APK found inside archive member '{member_name}' — analysing its manifest")
+
+        # ── 1c-2. Browser extension ──────────────────────────────────────────
+        # A .crx is a ZIP, so the archive walk already hashed its members and
+        # found nothing: the manifest is small JSON and the payload is ordinary
+        # JavaScript. The permission model is the part that matters.
+        extension_info = {}
+        if zipfile.is_zipfile(file_path):
+            extension_info = analyze_extension(file_path)
+        if not extension_info.get("is_extension") and archive_scan.get("extensions"):
+            member_name, inner = archive_scan["extensions"][0]
+            extension_info = dict(inner)
+            extension_info["matched_file"] = member_name
+            print(f"Browser extension inside archive member '{member_name}'")
 
         # ── 1d. Document Analysis (PDF / Office / OLE) ───────────────────────
         doc_info = analyze_document(file_path, original_filename)
@@ -1471,6 +1490,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "document": doc_info,
             "lnk":      lnk_info,
             "html":     html_info,
+            "extension": extension_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────
