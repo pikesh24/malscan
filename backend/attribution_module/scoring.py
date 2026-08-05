@@ -1190,7 +1190,14 @@ def calculate_score(analysis_data: dict) -> dict:
     record("MalwareBazaar Hash Match", mb_score)
 
     # YARA rule matches (pattern-based, very high confidence)
-    yara_score, r = _check_yara(osint); intel_total += yara_score; artifact_total += yara_score; all_reasons += r
+    # Heuristic, not intel: YARA is a pattern match Malscan runs itself, so it
+    # belongs with the other local analysis rather than with third-party
+    # corroboration. Filed under intel it did two wrong things at once — it
+    # counted as an outside opinion confirming Malscan's own finding, and it was
+    # exempt from the benign-consensus dampener that every other local signal is
+    # subject to. One broad rule (PDF_AutoAction, +25, matches a large share of
+    # ordinary PDFs) was enough to flag benign form PDFs on both counts.
+    yara_score, r = _check_yara(osint); heuristic_total += yara_score; artifact_total += yara_score; all_reasons += r
     record("YARA Rule Matches", yara_score)
 
     # ── Tier 2: IOC-based threat intelligence ─────────────────────────────────
@@ -1302,10 +1309,29 @@ def calculate_score(analysis_data: dict) -> dict:
     # when VT actually returned a verdict (40+ engines) AND the scan is complete;
     # a partial/absent VT result never dampens (that path is marked partial and
     # not cached, so it can't freeze a wrongly-low score).
-    vt_stats = (osint.get("virustotal") or {}).get("stats") or {}
+    vt_result = osint.get("virustotal") or {}
+    vt_stats = vt_result.get("stats") or {}
     vt_engines = sum(vt_stats.get(k, 0) for k in ("malicious", "suspicious", "harmless", "undetected"))
+    # A first submission is not a consensus. When the hash is unknown to VT the
+    # pipeline uploads the sample, and the fresh scan comes back with the full
+    # engine list reporting "undetected" — indistinguishable, by these counters,
+    # from a file those engines had held and cleared for years. It is the
+    # opposite: nobody had ever seen it. Dampening on that reads missing
+    # evidence as reassurance, and halved banking-trojan APKs into Clear.
+    # `uploaded` covers the scan that created the record; times_submitted covers
+    # every scan after it, where the hash now resolves but the only submission
+    # on file is still our own. Both describe one sample nobody else has seen.
+    _times_submitted = vt_result.get("times_submitted")
+    vt_first_submission = bool(vt_result.get("uploaded")) or (
+        _times_submitted is not None and _times_submitted <= 1
+    )
+    # This gate asks "did anyone independently corroborate this?" — so it counts
+    # only outside sources. YARA now scores as a heuristic (see above), which is
+    # what keeps a broad local rule from vouching for itself and switching the
+    # dampener off. See tests/live/yara_false_positives.py.
     if (
         not intel_partial
+        and not vt_first_submission
         and heuristic_total > 0
         and intel_total == 0
         and vt_engines >= 40
@@ -1420,6 +1446,27 @@ def calculate_score(analysis_data: dict) -> dict:
             f"No hash lookup, YARA rule or file analysis ran against them. This is a "
             f"known way of moving a sample past scanners — re-submit the contents "
             f"unpacked to get a real verdict."
+        )
+    elif analysis_data.get("unreadable_members") and verdict == "Clear":
+        # A member that extracted and then could not be read is almost always
+        # antivirus taking it in between — which is evidence about that member,
+        # not a tooling glitch. The same reasoning already applies to the
+        # top-level artifact; leaving it out here meant a malicious payload
+        # inside a ZIP came back Clear with no reasons at all, because the file
+        # that would have produced them had been confiscated.
+        verdict = "Inconclusive"
+        members = analysis_data["unreadable_members"]
+        listed = ", ".join(members[:3]) + (" …" if len(members) > 3 else "")
+        inconclusive_reason = (
+            f"{len(members)} file(s) inside this archive could not be read after being "
+            f"extracted ({listed}), so they were never scanned. The usual cause is "
+            f"antivirus on the scanning server quarantining them — which is a reason to "
+            f"treat the archive as dangerous, not safe."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — {len(members)} archive member(s) could not be read after "
+            f"extraction and were never analysed: {listed}. This commonly means antivirus "
+            f"removed them, which is a signal in its own right rather than an absence of one."
         )
     elif analysis_data.get("artifact_unreadable") and verdict == "Clear":
         # Nothing at all was analysed, so this is the strongest possible case

@@ -791,7 +791,7 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     for k in ("ips", "domains", "urls"):
         acc["iocs"][k].extend(inner_iocs.get(k) or [])
 
-    inner_pe = analyze_pe(inner_path, data=data)
+    inner_pe = analyze_pe(inner_path, data=data, filename=display_name)
     acc["suspicious_sections"].extend(inner_pe.get("suspicious_sections") or [])
     if inner_pe.get("is_pe"):
         acc["is_pe"] = True
@@ -1049,7 +1049,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             print(f"Artifact could not be read ({artifact_unreadable}) — "
                   f"commonly antivirus quarantine. Nothing was analysed.")
         iocs    = extract_iocs(file_path, data=raw_bytes)
-        pe_info = analyze_pe(file_path, data=raw_bytes)
+        # original_filename, not the vault path: the vault stores files under
+        # their hash with no extension, so without this the disguise check is dead.
+        pe_info = analyze_pe(file_path, data=raw_bytes, filename=original_filename)
         apk_info = {}
 
         # ── 1b. Archive Extraction — ZIP + RAR + APK (Zip-Slip / bomb safe) ───
@@ -1503,6 +1505,10 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             # Same consequence, different cause: the format itself cannot be
             # opened here. Kept separate so the report states which it was.
             "unsupported_container": archive_scan.get("unsupported_container"),
+            # Members that extracted but could not then be read — almost always
+            # antivirus quarantining them between extraction and analysis, which
+            # is evidence about the member rather than a tooling glitch.
+            "unreadable_members": archive_scan.get("unreadable") or [],
             # The artifact itself could not be read, so nothing was analysed.
             "artifact_unreadable": artifact_unreadable,
             "static": {

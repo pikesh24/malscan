@@ -308,6 +308,13 @@ def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict
                 "type_description": attrs.get("type_description"),
                 "meaningful_name": attrs.get("meaningful_name"),
                 "popular_threat_classification": attrs.get("popular_threat_classification"),
+                # How widely VT has actually encountered this sample. A report
+                # can show every engine "undetected" simply because the file was
+                # submitted once — by us, on a previous scan — which is not the
+                # same as a file the world has held and cleared. Scoring uses
+                # this to refuse to read a lone submission as a consensus.
+                "times_submitted": attrs.get("times_submitted"),
+                "first_submission_date": attrs.get("first_submission_date"),
                 "vt_status": "found",
             }
         elif response.status_code == 404:

@@ -131,7 +131,7 @@ def _file_entropy(data: bytes) -> float:
     return round(entropy, 3)
 
 
-def detect_file_type(file_path: str, data: bytes = None) -> dict:
+def detect_file_type(file_path: str, data: bytes = None, filename: str = None) -> dict:
     """
     Reads the first 16 bytes and matches against known magic signatures.
     Returns declared type from filename extension and detected type from bytes.
@@ -139,7 +139,12 @@ def detect_file_type(file_path: str, data: bytes = None) -> dict:
     """
     result = {"magic_type": "Unknown", "extension": "", "type_mismatch": False}
     try:
-        ext = os.path.splitext(file_path)[1].lower()
+        # The SUBMITTED name, not the stored one. Uploads are saved to the vault
+        # as their SHA-256 with no extension at all, so reading it from
+        # `file_path` meant `ext` was always "" — and the type-mismatch check
+        # below, worth +30 for a "deliberate disguise", could never once fire in
+        # production. A PE renamed to photo.jpg scored 8 (entropy) instead of 38.
+        ext = os.path.splitext(filename or file_path)[1].lower()
         result["extension"] = ext
 
         if data is not None:
@@ -229,8 +234,19 @@ def is_reportable_url(url: str) -> bool:
     if not host:
         return False
     try:
-        ipaddress.ip_address(host)   # bare-IP host is fine
-        return True
+        ipaddress.ip_address(host)
+        # A URL is held to the same standard as a bare IP. Without this the two
+        # policies disagreed: `10.0.0.5` on its own was correctly rejected as an
+        # indicator, while `http://10.0.0.5/panel` was accepted and then scored
+        # 25 for "raw IP address — common in C2 and phishing" — the identical
+        # score a genuine public C2 address gets.
+        #
+        # That fired on perfectly ordinary content: a docker-compose file, a
+        # README, an internal wiki page naming an admin panel. It also published
+        # the reader's internal addressing into the indicator list, which is
+        # noise at best. Loopback was already being filtered further down the
+        # pipeline, so the behaviour was inconsistent as well as wrong.
+        return is_reportable_ip(host)
     except ValueError:
         pass
     return "." in host   # otherwise require a dotted FQDN
@@ -318,7 +334,7 @@ def analyze_suspicious_strings(file_path: str, data: bytes = None) -> dict:
     return result
 
 
-def analyze_pe(file_path: str, data: bytes = None) -> dict:
+def analyze_pe(file_path: str, data: bytes = None, filename: str = None) -> dict:
     """
     Analyses Windows Executable (PE) metadata and anomalies.
     Pass `data` to reuse already-read bytes for entropy/type detection
@@ -347,7 +363,7 @@ def analyze_pe(file_path: str, data: bytes = None) -> dict:
     except Exception:
         raw = None
 
-    type_info = detect_file_type(file_path, data=raw)
+    type_info = detect_file_type(file_path, data=raw, filename=filename)
     results["magic_type"]    = type_info.get("magic_type", "Unknown")
     results["type_mismatch"] = type_info.get("type_mismatch", False)
 
