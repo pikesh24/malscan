@@ -190,6 +190,8 @@ function ReportContent() {
         icon: isClear ? 'text-green-500' : isInconclusive ? 'text-slate-500' : isSuspicious ? 'text-amber-500' : 'text-[#FF3B00]',
         iconGlow: isClear ? 'bg-green-500/20' : isInconclusive ? 'bg-slate-500/20' : isSuspicious ? 'bg-amber-500/20' : 'bg-red-500/20',
         bar: isClear ? 'bg-green-500' : isInconclusive ? 'bg-slate-400' : isSuspicious ? 'bg-amber-500' : 'bg-[#FF3B00]',
+        // Same palette as `bar`, as a hex the SVG radar can use directly.
+        accent: isClear ? '#22c55e' : isInconclusive ? '#94a3b8' : isSuspicious ? '#f59e0b' : '#FF3B00',
         IconComponent: isClear ? Check : isInconclusive ? HelpCircle : ShieldAlert
     }
     
@@ -408,7 +410,7 @@ function ReportContent() {
                         <h3 className={`text-[9px] font-bold mb-3 uppercase flex items-center gap-1.5 ${themeColors.textSub}`}>
                             <PieChart size={10}/> Score Composition
                         </h3>
-                        <ScoreComposition breakdown={scoreBreakdown} totalScore={threatScore} />
+                        <ScoreComposition breakdown={scoreBreakdown} totalScore={threatScore} clear={isClear} />
                     </div>
 
                     {/* VirusTotal Vendor Consensus */}
@@ -463,7 +465,7 @@ function ReportContent() {
                             <div className="p-4 border-b border-gray-200 bg-gray-50">
                                 <h3 className="text-xs font-bold tracking-[0.2em] uppercase flex items-center gap-2"><Radar size={14} className="text-[#FF3B00]" /> Risk Profile</h3>
                             </div>
-                            <RiskRadar axes={riskProfile} />
+                            <RiskRadar axes={riskProfile} tone={themeColors.accent} measured={!isInconclusive} />
                         </motion.div>
                     )}
 

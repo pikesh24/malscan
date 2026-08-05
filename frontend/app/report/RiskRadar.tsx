@@ -24,7 +24,12 @@ function valueRadius(value: number) {
     return (RADIUS_FLOOR + clamped * (1 - RADIUS_FLOOR)) * R
 }
 
-export default function RiskRadar({ axes }: { axes: Axis[] }) {
+// `tone` keeps the plot in the same palette as the rest of the report: drawing
+// a Clear result in alarm orange made an artifact with no risk at all look like
+// risk on every axis. `measured` is false when the scan could not complete —
+// every axis is then 0 for want of an answer, not because the answer was low,
+// and a filled shape would assert five measurements nobody took.
+export default function RiskRadar({ axes, tone = "#FF3B00", measured = true }: { axes: Axis[]; tone?: string; measured?: boolean }) {
     const [hovered, setHovered] = useState<number | null>(null)
 
     if (!axes || axes.length === 0) return null
@@ -58,19 +63,23 @@ export default function RiskRadar({ axes }: { axes: Axis[] }) {
                         return <line key={i} x1={CX} y1={CY} x2={p.x} y2={p.y} stroke="#e7e9ec" strokeWidth={1} />
                     })}
 
-                    <polygon
-                        points={valuePath}
-                        fill="#FF3B00" fillOpacity={0.18} stroke="#FF3B00" strokeWidth={2.5} strokeLinejoin="round"
-                        className="transition-all duration-700"
-                    />
-                    {valuePoints.map((p, i) => (
-                        <circle
-                            key={i} cx={p.x} cy={p.y}
-                            r={hovered === i ? 5.5 : 4}
-                            fill="#FF3B00" stroke="white" strokeWidth={1.5}
-                            className="transition-all"
-                        />
-                    ))}
+                    {measured && (
+                        <>
+                            <polygon
+                                points={valuePath}
+                                fill={tone} fillOpacity={0.18} stroke={tone} strokeWidth={2.5} strokeLinejoin="round"
+                                className="transition-all duration-700"
+                            />
+                            {valuePoints.map((p, i) => (
+                                <circle
+                                    key={i} cx={p.x} cy={p.y}
+                                    r={hovered === i ? 5.5 : 4}
+                                    fill={tone} stroke="white" strokeWidth={1.5}
+                                    className="transition-all"
+                                />
+                            ))}
+                        </>
+                    )}
 
                     {axes.map((a, i) => {
                         const lp = point(i, n, R + 40)
@@ -89,7 +98,7 @@ export default function RiskRadar({ axes }: { axes: Axis[] }) {
                                     fontSize={8.5}
                                     fontFamily="ui-monospace, monospace"
                                     fontWeight={hovered === i ? 700 : 600}
-                                    fill={hovered === i ? "#FF3B00" : "#4b5563"}
+                                    fill={hovered === i ? tone : "#4b5563"}
                                     className="uppercase select-none transition-colors"
                                 >
                                     {words.map((word, wi) => (
@@ -102,10 +111,15 @@ export default function RiskRadar({ axes }: { axes: Axis[] }) {
                 </svg>
             </div>
             <div className="mt-3 pt-3 border-t border-gray-100 min-h-[54px]">
-                {active ? (
-                    <div className="pl-3 border-l-2 border-l-[#FF3B00] transition-colors">
+                {!measured ? (
+                    <p className="text-[10px] font-mono text-gray-500 leading-relaxed text-center pt-1">
+                        Not measured — the scan could not complete. An empty plot here means
+                        no answer was obtained, not that every axis came back low.
+                    </p>
+                ) : active ? (
+                    <div className="pl-3 border-l-2 transition-colors" style={{ borderLeftColor: tone }}>
                         <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#FF3B00]">{active.label}</span>
+                            <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: tone }}>{active.label}</span>
                             <span className="text-[10px] font-mono font-bold text-gray-700">{active.value}/100</span>
                         </div>
                         <p className="text-[10px] font-mono text-gray-500 leading-relaxed">{active.description}</p>
