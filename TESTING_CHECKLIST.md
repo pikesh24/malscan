@@ -539,6 +539,35 @@ Each was a real, exploitable false-clean. Re-run after any refactor.
 - [ ] Same URL scanned twice → same country vantage point
 - [ ] A known-bad member inside an encrypted archive → still Malicious, not Inconclusive
 
+Scoring — a clean answer must be earned, not inferred from silence:
+
+- [ ] Novel APK (overlay + accessibility) VirusTotal has never seen → Suspicious,
+      **not** Clear. Check the breakdown carries no "Benign VirusTotal Consensus"
+      entry: a first submission is not a consensus
+- [ ] Rescan that same file → same verdict as the first scan. The hash now
+      resolves, but one submission on file is still only ours
+- [ ] A genuinely well-known clean file with mild heuristics → **still** dampened.
+      The dampener was narrowed, not removed
+- [ ] Benign form PDF + one broad YARA hit (e.g. `PDF_AutoAction`) → Clear. YARA
+      is our own pattern match and must not switch off the dampener or corroborate
+      our own finding
+- [ ] PE renamed `photo.jpg` / `.pdf` → +30 disguise fires (≈38, Suspicious).
+      Test through the **real upload path**: the vault stores a bare sha256, so a
+      unit test passing a realistic path will not catch a regression here
+- [ ] `http://192.168.x.x/...` in a document → not scored as C2, absent from
+      indicators; a genuine public IP (e.g. `8.8.8.8`) still scores
+
+Report — "could not check" must never render as "nothing is wrong":
+
+- [ ] Inconclusive report → Score Composition reads slate and says nothing was
+      scored; never a green tick or "came back clean on every check"
+- [ ] Inconclusive report → risk radar draws **no** polygon, and says not measured
+- [ ] Clear report at 0/100 → radar is green, not alarm orange
+- [ ] Settings: type an unreachable URL, press TEST CONNECTION → UNREACHABLE, and
+      the value is not silently saved
+- [ ] `/analysis` stage list matches the real pipeline in `main.py` — no sandbox,
+      no artifact volume, no passive DNS
+
 ---
 
 ## 21. Limits and performance
