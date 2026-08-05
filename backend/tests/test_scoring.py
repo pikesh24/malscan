@@ -185,6 +185,44 @@ def test_ordinary_pdf_with_forms_is_clear():
     assert result["verdict"] == "Clear", f"benign PDF flagged: {result['score']} {result['reasons']}"
 
 
+def test_weak_yara_hit_does_not_disable_benign_consensus():
+    """A broad YARA rule must not switch off the false-positive protection.
+
+    The dampener only ran when `intel_total == 0`, and YARA scores into
+    `intel_total`. So a rule like PDF_AutoAction — "high" severity, +25, and a
+    match on a large share of perfectly ordinary PDFs — silently disabled the
+    protection written specifically to stop ordinary form PDFs being flagged.
+    The benign PDF below is the same one test_ordinary_pdf_with_forms_is_clear
+    guards; adding one weak local pattern match must not change its verdict.
+
+    YARA is a pattern match Malscan runs itself, not a second opinion from
+    anyone else, so it cannot serve as the corroboration this gate is asking for.
+    """
+    document = {
+        "doc_type": "pdf",
+        "has_javascript": True,
+        "has_auto_action": True,
+        "has_js_auto_combo": False,
+    }
+    established_clean_vt = {
+        "times_submitted": 9000,
+        "stats": {"malicious": 0, "suspicious": 0, "harmless": 0, "undetected": 62},
+    }
+    result = calculate_score({
+        "document": document,
+        "osint": {
+            "virustotal": established_clean_vt,
+            "yara": {"yara_matches": [
+                {"rule": "PDF_AutoAction", "severity": "high",
+                 "description": "PDF contains an automatic action"},
+            ]},
+        },
+    })
+    assert result["verdict"] == "Clear", (
+        f"weak YARA hit disabled the dampener: {result['score']} {result['score_breakdown']}"
+    )
+
+
 def test_driveby_pdf_combo_is_flagged():
     result = calculate_score({
         "document": {
@@ -197,6 +235,65 @@ def test_driveby_pdf_combo_is_flagged():
     })
     assert result["score"] >= 70
     assert result["verdict"] == "Malicious"
+
+
+def test_first_submission_does_not_count_as_a_benign_consensus():
+    """A file VirusTotal has never seen before must not be treated as cleared.
+
+    Real-world bug: a banking-overlay APK scored 60/Suspicious on its own
+    permissions, then the VT lookup 404'd, the pipeline uploaded the file, and
+    the fresh scan returned "0 malicious, 0 harmless, 64 undetected". Those 64
+    engines had never encountered the sample — "undetected" counted toward the
+    40-engine threshold exactly as if 64 vendors had examined it and cleared it,
+    so the dampener halved 60 to 30 and the trojan reported Clear.
+
+    Nobody cleared the file. Nobody had seen it. Absence of a detection on a
+    first submission is missing evidence, not evidence of safety.
+    """
+    apk = {
+        "is_apk": True,
+        "dangerous_permissions": [
+            "android.permission.SYSTEM_ALERT_WINDOW",
+            "android.permission.BIND_ACCESSIBILITY_SERVICE",
+            "android.permission.READ_SMS",
+        ],
+    }
+    never_seen = {"malicious": 0, "suspicious": 0, "harmless": 0, "undetected": 64}
+
+    result = calculate_score({
+        "apk": apk,
+        # `uploaded` is set by vt_client only on the path where the hash was
+        # unknown and we submitted the sample ourselves.
+        "osint": {"virustotal": {"uploaded": True, "stats": never_seen}},
+    })
+
+    dampened = [e for e in result["score_breakdown"]
+                if "Benign VirusTotal Consensus" in e["label"]]
+    assert not dampened, f"first submission dampened the score: {dampened}"
+    assert result["verdict"] in ("Suspicious", "Malicious"), (
+        f"banking-overlay APK reported {result['verdict']} at {result['score']}: "
+        f"{result['score_breakdown']}"
+    )
+
+    # Rescanning the same file finds the record we ourselves created a moment
+    # ago. The hash now resolves, so `uploaded` is gone, but the sample is no
+    # better attested than before — one submission, still ours.
+    rescan = calculate_score({
+        "apk": apk,
+        "osint": {"virustotal": {"times_submitted": 1, "stats": never_seen}},
+    })
+    assert rescan["verdict"] == result["verdict"], (
+        f"same file changed verdict on rescan: {result['verdict']} -> {rescan['verdict']}"
+    )
+
+    # A sample the world really has held and cleared still dampens — this fix
+    # narrows the dampener, it does not remove it.
+    well_known = calculate_score({
+        "apk": apk,
+        "osint": {"virustotal": {"times_submitted": 4200, "stats": never_seen}},
+    })
+    assert any("Benign VirusTotal Consensus" in e["label"]
+               for e in well_known["score_breakdown"]), "dampener no longer fires at all"
 
 
 def test_vt_clean_does_not_dampen_confirmed_intel():

@@ -44,6 +44,67 @@ def _get_with_rate_limit_retry(endpoint: str, headers: dict, timeout: int = 15):
     return response
 
 
+# Polling budgets. Attempts are chances for the ANALYSIS to finish; throttled
+# responses are counted separately because being rate limited says nothing about
+# whether the analysis is done.
+VT_MAX_THROTTLED_POLLS = 3
+
+
+def _poll_analysis(analysis_id: str, headers: dict, attempts: int, interval: int):
+    """Polls /analyses/{id} until it completes. Returns (attrs, status).
+
+    status is one of 'completed', 'pending' or 'rate_limited'.
+
+    The bug this exists to fix: both poll loops treated any non-200 as "still
+    analysing". A 429 is not progress — VirusTotal may well have finished and
+    simply be throttling us — but each one consumed an attempt, so a scan could
+    exhaust its budget while a real verdict sat waiting, then report
+    vt_status 'queued'. That marks the scan partial and downgrades a perfectly
+    good result to Inconclusive.
+
+    It also wasted quota: nine polls at five-second intervals is twelve requests
+    a minute against a four-per-minute ceiling, so most of them were always
+    going to be throttled.
+    """
+    endpoint = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+    throttled = 0
+    remaining = attempts
+    # A while loop, not `for _ in range(attempts)`: inside a for loop a `continue`
+    # still spends the iteration, so a throttled poll would go on consuming the
+    # very budget this function exists to protect. Attempts are decremented only
+    # by answers that actually tell us something about the analysis.
+    while remaining > 0:
+        time.sleep(interval)
+        try:
+            poll = requests.get(endpoint, headers=headers, timeout=15)
+        except requests.RequestException as e:
+            logger.warning(f"VT analysis poll failed, retrying: {e}")
+            remaining -= 1
+            continue
+
+        if poll.status_code == 429:
+            throttled += 1
+            if throttled > VT_MAX_THROTTLED_POLLS:
+                logger.warning(
+                    "VT rate limited on %d analysis polls; reporting no verdict "
+                    "rather than a clean one.", throttled,
+                )
+                return None, "rate_limited"
+            # Wait out the window. Deliberately does NOT spend an attempt: being
+            # throttled says nothing about whether the analysis has finished.
+            time.sleep(VT_RATE_LIMIT_BACKOFF_SECONDS)
+            continue
+
+        if poll.status_code == 200:
+            attrs = poll.json().get("data", {}).get("attributes", {})
+            if attrs.get("status") == "completed":
+                return attrs, "completed"
+
+        remaining -= 1
+
+    return None, "pending"
+
+
 def _extract_detections(attrs: dict, limit: int = 10) -> list:
     """Pulls named vendor verdicts out of VT's per-engine results.
 
@@ -103,22 +164,20 @@ def get_url_report(url: str, api_key: str) -> dict:
                 analysis_id = submit_res.json().get("data", {}).get("id")
                 # Poll up to 5 times (~15 s) — enough for a fresh URL analysis to
                 # finish reliably, still capped so it can't hold the pipeline.
-                for _ in range(5):
-                    time.sleep(3)
-                    poll = requests.get(
-                        f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
-                        headers=headers,
-                        timeout=15,
-                    )
-                    if poll.status_code == 200:
-                        attrs = poll.json().get("data", {}).get("attributes", {})
-                        if attrs.get("status") == "completed":
-                            return {
-                                "stats": attrs.get("stats", {}),
-                                "detections": _extract_detections(attrs),
-                                "reputation": 0,
-                                "vt_status": "found",
-                            }
+                attrs, poll_status = _poll_analysis(analysis_id, headers, attempts=5, interval=3)
+                if poll_status == "completed":
+                    return {
+                        "stats": attrs.get("stats", {}),
+                        "detections": _extract_detections(attrs),
+                        "reputation": 0,
+                        "vt_status": "found",
+                    }
+                if poll_status == "rate_limited":
+                    return {
+                        "status": "rate_limited",
+                        "message": "VT rate limit reached while waiting for URL analysis.",
+                        "vt_status": "rate_limited",
+                    }
                 return {"status": "queued", "message": "VT analysis still pending.", "vt_status": "queued"}
             return {"error": f"VT submit failed (HTTP {submit_res.status_code})", "vt_status": "error"}
 
@@ -183,27 +242,27 @@ def upload_file(file_path: str, api_key: str) -> dict:
 
         # Poll for results (up to ~45s)
         poll_headers = {**headers, "accept": "application/json"}
-        for attempt in range(9):
-            time.sleep(5)
-            poll = requests.get(
-                f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
-                headers=poll_headers,
-                timeout=15,
-            )
-            if poll.status_code == 200:
-                attrs = poll.json().get("data", {}).get("attributes", {})
-                if attrs.get("status") == "completed":
-                    return {
-                        "stats": attrs.get("stats", {}),
-                        "detections": _extract_detections(attrs),
-                        "reputation": 0,
-                        "uploaded": True,
-                        "vt_status": "found",
-                    }
+        attrs, poll_status = _poll_analysis(analysis_id, poll_headers, attempts=9, interval=5)
+        if poll_status == "completed":
+            return {
+                "stats": attrs.get("stats", {}),
+                "detections": _extract_detections(attrs),
+                "reputation": 0,
+                "uploaded": True,
+                "vt_status": "found",
+            }
 
-        # Still analysing after the budget — NOT a clean verdict, just incomplete.
-        # 'vt_status: queued' tells the pipeline to mark the scan partial (and
-        # therefore not cache it) so a re-scan re-tries instead of freezing a 0.
+        # Neither outcome is a clean verdict, and the pipeline marks both partial
+        # so a re-scan retries instead of freezing a 0. They are reported apart
+        # because they need different things from the operator: 'pending' means
+        # wait, 'rate_limited' means the quota is the bottleneck.
+        if poll_status == "rate_limited":
+            return {
+                "status": "rate_limited",
+                "message": "VT rate limit reached while waiting for file analysis.",
+                "uploaded": True,
+                "vt_status": "rate_limited",
+            }
         return {"status": "queued", "message": "VT file analysis still pending after upload.", "uploaded": True, "vt_status": "queued"}
 
     except requests.exceptions.Timeout:
@@ -249,6 +308,13 @@ def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict
                 "type_description": attrs.get("type_description"),
                 "meaningful_name": attrs.get("meaningful_name"),
                 "popular_threat_classification": attrs.get("popular_threat_classification"),
+                # How widely VT has actually encountered this sample. A report
+                # can show every engine "undetected" simply because the file was
+                # submitted once — by us, on a previous scan — which is not the
+                # same as a file the world has held and cleared. Scoring uses
+                # this to refuse to read a lone submission as a consensus.
+                "times_submitted": attrs.get("times_submitted"),
+                "first_submission_date": attrs.get("first_submission_date"),
                 "vt_status": "found",
             }
         elif response.status_code == 404:

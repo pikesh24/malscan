@@ -186,6 +186,20 @@ def analyze_office_ooxml(file_path: str) -> dict:
         with zipfile.ZipFile(file_path, "r") as zf:
             names_lower = {n.lower() for n in zf.namelist()}
 
+            # Confirm this really is an Office package before reading anything
+            # into the result. `is_ooxml` used to be set by the presence of any
+            # member ending .xml/.rels/.bin, which is true of an APK
+            # (AndroidManifest.xml) and of a browser extension — so widening the
+            # caller's gate to "any ZIP" would have started reporting Android
+            # packages as Office documents. Every OOXML file carries the content
+            # types part or one of the application part directories.
+            if not (
+                "[content_types].xml" in names_lower
+                or any(n.startswith(("word/", "xl/", "ppt/", "docprops/", "visio/"))
+                       for n in names_lower)
+            ):
+                return result
+
             # Check for VBA project
             for macro_file in MACRO_INDICATOR_FILES:
                 if macro_file.lower() in names_lower or any(macro_file.lower() in n for n in names_lower):
@@ -305,10 +319,13 @@ def analyze_document(file_path: str, filename: str = "") -> dict:
     except Exception:
         pass
 
-    # Try OOXML (DOCX/XLSX/PPTX)
-    if ext in (".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm") or (
-        not ext and zipfile.is_zipfile(file_path)
-    ):
+    # Try OOXML (DOCX/XLSX/PPTX) for any ZIP, not just recognised extensions.
+    # Gating on the extension meant a macro-bearing .docm renamed to .zip (or
+    # .dat, or anything) skipped VBA detection entirely and came back
+    # doc_type=unknown — free evasion of one of the most common delivery
+    # mechanisms there is. analyze_office_ooxml confirms the package structure
+    # itself, so handing it any ZIP is safe.
+    if ext in (".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm") or zipfile.is_zipfile(file_path):
         result = analyze_office_ooxml(file_path)
         if result.get("is_ooxml"):
             result["doc_type"] = "ooxml"

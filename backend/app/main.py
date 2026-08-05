@@ -63,6 +63,10 @@ try:
     )
     from analysis_engine.apk_analyzer import analyze_apk
     from analysis_engine.document_analyzer import analyze_document
+    from analysis_engine.lnk_analyzer import analyze_lnk
+    from analysis_engine.html_analyzer import analyze_html
+    from analysis_engine.extension_analyzer import analyze_extension
+    from analysis_engine.script_analyzer import analyze_script
     from analysis_engine.yara_scanner import scan_file as yara_scan_file
     from analysis_engine.malwarebazaar_client import check_hash as mb_check_hash
     from analysis_engine.threatfox_client import check_iocs as tf_check_iocs
@@ -496,6 +500,39 @@ def _open_extractable_archive(file_path: str):
             print(f"RAR open failed: {e}")
     return None, None, None
 
+
+# Container formats identified by magic bytes but with no extraction backend
+# here. Naming the format in a report while never reading a byte of its contents
+# is the same false-clean the password-protected case produced: "nothing found"
+# describing a scan that never looked. Keyed on the magic_type strings
+# static_analyzer emits, so the two lists cannot drift apart silently.
+UNSUPPORTED_CONTAINER_TYPES = {
+    "7-Zip Archive":                "7-Zip",
+    "GZIP Compressed":              "GZIP",
+    "BZIP2 Compressed":             "BZIP2",
+    "XZ Compressed":                "XZ",
+    "Microsoft Cabinet (CAB) File": "Microsoft Cabinet (CAB)",
+    "InstallShield CAB":            "InstallShield CAB",
+    "TAR Archive":                  "TAR",
+    "ISO 9660 Disc Image":          "ISO disc image",
+}
+
+
+def _unextractable_container(magic_type: str) -> str | None:
+    """Names the container format when the file is one we cannot open, else None.
+
+    RAR is conditional rather than listed: it IS supported, but only when an
+    unrar/bsdtar/7z backend exists on the host. Without one the scan silently
+    examined nothing, which docs/RUNNING.md warns about generally but no report
+    ever said out loud.
+    """
+    if magic_type in UNSUPPORTED_CONTAINER_TYPES:
+        return UNSUPPORTED_CONTAINER_TYPES[magic_type]
+    if magic_type == "RAR Archive" and not RAR_ENABLED:
+        return "RAR (no extraction backend installed on this server)"
+    return None
+
+
 # zipfile.ZipInfo and rarfile.RarInfo expose the same three member attributes,
 # so one loop handles both — these normalize the small API differences.
 def _member_name(m) -> str:
@@ -503,6 +540,21 @@ def _member_name(m) -> str:
 
 def _member_size(m) -> int:
     return getattr(m, "file_size", 0) or 0
+
+def _is_encrypted_member_error(exc: Exception) -> bool:
+    """True when a member failed to extract because it is password-protected.
+
+    Matched on type name and message rather than a specific exception class:
+    zipfile raises a bare RuntimeError("... is encrypted, password required for
+    extraction"), while rarfile raises PasswordRequired or RarWrongPassword —
+    and rarfile is an optional dependency, so it cannot be referenced directly
+    here without coupling this check to whether RAR support is installed.
+    """
+    if "password" in type(exc).__name__.lower() or "encrypt" in type(exc).__name__.lower():
+        return True
+    message = str(exc).lower()
+    return "password" in message or "encrypted" in message
+
 
 def _member_is_dir(m) -> bool:
     is_dir = getattr(m, "is_dir", None)
@@ -556,8 +608,31 @@ def _new_archive_scan() -> dict:
         "suspicious_strings": [],
         "yara_matches": [],
         "documents": [],
+        # (member name, apk_info) for every APK found inside. An APK arriving
+        # wrapped in a ZIP is the same threat as one arriving directly, and the
+        # permission scoring is the strongest Android signal available.
+        "apks": [],
+        # (member name, script_info) for script members with findings. A .js or
+        # .vbs dropper is a standard second stage inside an archive or ISO.
+        "scripts": [],
+        # (member name, extension_info) for browser extensions found inside.
+        "extensions": [],
+        # (member name, html_info) for HTML members with findings — a smuggling
+        # page is routinely zipped so the mail gateway sees an archive instead.
+        "htmls": [],
+        # (member name, lnk_info) for shortcuts with findings. A malicious .lnk
+        # almost always arrives inside a container, because that is what strips
+        # the mark-of-the-web warning.
+        "lnks": [],
         "hash_candidates": [],
         "unreadable": [],
+        # Members that could not be extracted because the archive is
+        # password-protected. Distinct from `unreadable`, which is for files
+        # that DID extract and then failed to read (usually AV quarantine).
+        "encrypted": [],
+        # Set when the artifact is a container format with no extraction backend
+        # here (7-Zip, CAB, ISO, TAR, RAR without unrar). Holds the format name.
+        "unsupported_container": None,
         "is_pe": False,
         "imphash": None,
     }
@@ -639,7 +714,18 @@ def _scan_archive_tree(file_path: str, acc: dict, depth: int = 1) -> None:
             except Exception as me:
                 # A backend that can't decompress one member (e.g. an
                 # unsupported RAR compression) must not abort the scan.
-                print(f"Archive member '{member_name}' extraction failed: {me}")
+                if _is_encrypted_member_error(me):
+                    # Password-protected. Every inner detector is bypassed —
+                    # no hash for MalwareBazaar/VirusTotal, no YARA, no PE or
+                    # document analysis — so the scan MUST say it could not
+                    # look inside rather than let "nothing found" read as
+                    # "nothing there". Encrypting the payload and mailing the
+                    # password separately is a standard way of getting a
+                    # sample past exactly this kind of scanner.
+                    acc["encrypted"].append(member_name)
+                    print(f"Archive member '{member_name}' is password-protected — not scanned")
+                else:
+                    print(f"Archive member '{member_name}' extraction failed: {me}")
                 continue
             if written is None:
                 acc["truncated"] = f"size limit reached ({MAX_DECOMPRESSED_BYTES // 1024 // 1024} MB decompressed)"
@@ -709,7 +795,7 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     for k in ("ips", "domains", "urls"):
         acc["iocs"][k].extend(inner_iocs.get(k) or [])
 
-    inner_pe = analyze_pe(inner_path, data=data)
+    inner_pe = analyze_pe(inner_path, data=data, filename=display_name)
     acc["suspicious_sections"].extend(inner_pe.get("suspicious_sections") or [])
     if inner_pe.get("is_pe"):
         acc["is_pe"] = True
@@ -724,6 +810,41 @@ def _analyze_archive_member(inner_path: str, display_name: str, acc: dict, depth
     inner_doc = analyze_document(inner_path, display_name) or {}
     if inner_doc.get("doc_type") not in (None, "unknown"):
         acc["documents"].append((display_name, inner_doc))
+
+    # A shortcut inside an archive. This is the ordinary way a malicious .lnk
+    # travels — inside a ZIP or an ISO, because the container strips the
+    # mark-of-the-web warning the user would otherwise see.
+    inner_lnk = analyze_lnk(inner_path, data=data)
+    if inner_lnk.get("is_lnk") and inner_lnk.get("suspicious"):
+        acc["lnks"].append((display_name, inner_lnk))
+
+    inner_html = analyze_html(inner_path, data=data, filename=display_name)
+    if inner_html.get("is_html") and inner_html.get("codes"):
+        acc["htmls"].append((display_name, inner_html))
+
+    inner_script = analyze_script(inner_path, data=data, filename=display_name)
+    if inner_script.get("is_script") and inner_script.get("codes"):
+        acc["scripts"].append((display_name, inner_script))
+
+    # An APK inside an archive. Only ZIP members are asked, so this costs one
+    # archive open on the members that could possibly be APKs and nothing on the
+    # rest. Without it, wrapping a banking trojan in a ZIP discarded every
+    # Android-specific signal — permissions, overlay/accessibility conjunction,
+    # DEX strings — while still looking thoroughly scanned.
+    try:
+        if zipfile.is_zipfile(inner_path):
+            inner_ext = analyze_extension(inner_path)
+            if inner_ext.get("is_extension") and inner_ext.get("codes"):
+                acc["extensions"].append((display_name, inner_ext))
+            inner_apk = analyze_apk(inner_path)
+            if inner_apk.get("is_apk"):
+                acc["apks"].append((display_name, inner_apk))
+                for k in ("ips", "urls"):
+                    acc["iocs"][k] = sorted(
+                        set(acc["iocs"][k]) | set(inner_apk.get(f"dex_{k}") or [])
+                    )
+    except Exception as e:
+        print(f"APK analysis of member '{display_name}' failed: {e}")
 
     acc["suspicious_strings"].extend(
         analyze_suspicious_strings(inner_path, data=data).get("suspicious_strings") or []
@@ -913,13 +1034,28 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # ── 1. Static Analysis ───────────────────────────────────────────────
         # Read the artifact once and reuse the bytes across analyzers, instead of
         # re-reading a (up to 50 MB) file from disk for each pass.
+        # If this read fails, EVERY analyser below silently receives nothing:
+        # extraction, PE parsing, YARA and the document analysers all return
+        # empty, and the scan reports Clear on a file it never opened. The
+        # commonest cause is real-time antivirus on the scanning host
+        # quarantining the sample between upload and analysis — which correlates
+        # with the file being genuinely malicious, making this the worst
+        # possible moment to return a clean verdict. Observed in this project's
+        # own test run, where a fixture containing a download cradle was
+        # confiscated mid-scan.
+        artifact_unreadable = None
         try:
             with open(file_path, "rb") as f:
                 raw_bytes = f.read()
-        except Exception:
+        except Exception as e:
             raw_bytes = None
+            artifact_unreadable = type(e).__name__
+            print(f"Artifact could not be read ({artifact_unreadable}) — "
+                  f"commonly antivirus quarantine. Nothing was analysed.")
         iocs    = extract_iocs(file_path, data=raw_bytes)
-        pe_info = analyze_pe(file_path, data=raw_bytes)
+        # original_filename, not the vault path: the vault stores files under
+        # their hash with no extension, so without this the disguise check is dead.
+        pe_info = analyze_pe(file_path, data=raw_bytes, filename=original_filename)
         apk_info = {}
 
         # ── 1b. Archive Extraction — ZIP + RAR + APK (Zip-Slip / bomb safe) ───
@@ -930,6 +1066,16 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # _open_extractable_archive sniffs content rather than the extension.
         archive_scan = _new_archive_scan()
         _scan_archive_tree(file_path, archive_scan)
+
+        # A container we can name but cannot open. Recorded on the same footing
+        # as a password-protected archive, because the user-visible failure is
+        # identical: the report describes a 7-Zip archive (or an ISO, or a RAR
+        # on a host with no backend) while nothing inside it was ever read.
+        _unsupported = _unextractable_container(pe_info.get("magic_type", ""))
+        if _unsupported and not archive_scan["contents"]:
+            archive_scan["unsupported_container"] = _unsupported
+            print(f"Container format not extractable here: {_unsupported} — contents not scanned")
+
         archive_contents = archive_scan["contents"]
         if archive_contents:
             for k in ("ips", "domains", "urls"):
@@ -940,14 +1086,88 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 pe_info["imphash"] = pe_info.get("imphash") or archive_scan["imphash"]
 
         # ── 1c. APK Analysis ─────────────────────────────────────────────────
-        if original_filename.lower().endswith(".apk"):
+        # Gated on content, not on the filename. analyze_apk already answers the
+        # question itself — it requires a readable ZIP containing
+        # AndroidManifest.xml and returns is_apk False otherwise — so calling it
+        # for any ZIP costs one archive open and removes a rename as an evasion.
+        # Permission scoring is the strongest Android signal in the product;
+        # `evil.apk` renamed `evil.zip` used to discard all of it.
+        if zipfile.is_zipfile(file_path):
             apk_info = analyze_apk(file_path)
-            for k in ("ips", "urls"):
-                apk_key = f"dex_{k}"
-                iocs[k] = list(set(iocs.get(k, []) + apk_info.get(apk_key, [])))
+            if apk_info.get("is_apk"):
+                for k in ("ips", "urls"):
+                    apk_key = f"dex_{k}"
+                    iocs[k] = list(set(iocs.get(k, []) + apk_info.get(apk_key, [])))
+
+        # A ZIP is a wrapper, so an APK found inside it is evidence about the
+        # thing the user submitted — the same reasoning that promotes an archive
+        # member's MalwareBazaar hit below. Only when the container is not itself
+        # an APK: a direct APK's own manifest always wins.
+        if not apk_info.get("is_apk") and archive_scan.get("apks"):
+            member_name, inner_apk = archive_scan["apks"][0]
+            apk_info = dict(inner_apk)
+            apk_info["matched_file"] = member_name
+            print(f"APK found inside archive member '{member_name}' — analysing its manifest")
+
+        # ── 1c-2. Browser extension ──────────────────────────────────────────
+        # A .crx is a ZIP, so the archive walk already hashed its members and
+        # found nothing: the manifest is small JSON and the payload is ordinary
+        # JavaScript. The permission model is the part that matters.
+        extension_info = {}
+        if zipfile.is_zipfile(file_path):
+            extension_info = analyze_extension(file_path)
+        if not extension_info.get("is_extension") and archive_scan.get("extensions"):
+            member_name, inner = archive_scan["extensions"][0]
+            extension_info = dict(inner)
+            extension_info["matched_file"] = member_name
+            print(f"Browser extension inside archive member '{member_name}'")
 
         # ── 1d. Document Analysis (PDF / Office / OLE) ───────────────────────
         doc_info = analyze_document(file_path, original_filename)
+
+        # ── 1d-2. Windows shortcut ───────────────────────────────────────────
+        # Content-gated like the APK path: a .lnk is routinely renamed, and the
+        # signature (header size plus CLSID) is unambiguous.
+        lnk_info = analyze_lnk(file_path, data=raw_bytes)
+        # A shortcut found inside the archive is evidence about what was
+        # submitted, same as a promoted APK or MalwareBazaar hit. Only when the
+        # artifact is not itself a shortcut.
+        if not lnk_info.get("is_lnk") and archive_scan.get("lnks"):
+            member_name, inner = archive_scan["lnks"][0]
+            lnk_info = dict(inner)
+            lnk_info["matched_file"] = member_name
+            print(f"Suspicious shortcut inside archive member '{member_name}'")
+        if lnk_info.get("is_lnk"):
+            # A shortcut's command line frequently carries the second-stage URL,
+            # which is an indicator in its own right.
+            lnk_iocs = extract_iocs(file_path, data=(lnk_info.get("arguments") or "").encode())
+            for k in ("ips", "domains", "urls"):
+                iocs[k] = sorted(set((iocs.get(k) or []) + (lnk_iocs.get(k) or [])))
+
+        # ── 1d-3. HTML attachment ────────────────────────────────────────────
+        # An HTML attachment carries no macro and often no URL, so it read as
+        # inert text. The payload is inside the page and assembled by script in
+        # the browser, which is exactly why nothing on the network path sees it.
+        html_info = analyze_html(file_path, data=raw_bytes, filename=original_filename)
+        if not html_info.get("is_html") and archive_scan.get("htmls"):
+            member_name, inner = archive_scan["htmls"][0]
+            html_info = dict(inner)
+            html_info["matched_file"] = member_name
+            print(f"Suspicious HTML inside archive member '{member_name}'")
+
+        # ── 1d-4. Script dropper ─────────────────────────────────────────────
+        # Scripts were covered only by raw string matching and YARA, which
+        # misses anything obfuscated -- and obfuscation is the norm, because a
+        # script is text and rewriting text is free.
+        script_info = analyze_script(file_path, data=raw_bytes, filename=original_filename)
+        if not script_info.get("is_script") and archive_scan.get("scripts"):
+            member_name, inner = archive_scan["scripts"][0]
+            script_info = dict(inner)
+            script_info["matched_file"] = member_name
+            print(f"Suspicious script inside archive member '{member_name}'")
+        for _u in script_info.get("urls") or []:
+            if _u not in (iocs.get("urls") or []):
+                iocs.setdefault("urls", []).append(_u)
 
         # ── 1e. Suspicious string patterns ───────────────────────────────────
         string_info = analyze_suspicious_strings(file_path, data=raw_bytes)
@@ -1249,7 +1469,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
                 return False
             if "error" in res:
                 return True
-            return (res.get("vt_status") or res.get("status")) in ("queued", "pending", "error")
+            # 'rate_limited' is distinct from 'queued' — the analysis may well be
+            # finished and we were merely throttled off it — but both mean no
+            # verdict was obtained, which is what makes a scan partial.
+            return (res.get("vt_status") or res.get("status")) in (
+                "queued", "pending", "error", "rate_limited",
+            )
 
         # Scoped to the lookup that describes THE ARTIFACT: vt_file for an upload,
         # vt_url for a submitted URL. A VT lookup on a URL merely *embedded* in a
@@ -1277,6 +1502,19 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "archive_hashes": archive_scan["hash_candidates"],
             "submitted_url": submitted_url,
             "intel_partial": intel_partial,
+            # Members that exist but could not be examined. Scoring turns a
+            # would-be "Clear" into "Inconclusive" on the strength of this: a
+            # scan that never saw the files cannot vouch for them.
+            "unexaminable": archive_scan.get("encrypted") or [],
+            # Same consequence, different cause: the format itself cannot be
+            # opened here. Kept separate so the report states which it was.
+            "unsupported_container": archive_scan.get("unsupported_container"),
+            # Members that extracted but could not then be read — almost always
+            # antivirus quarantining them between extraction and analysis, which
+            # is evidence about the member rather than a tooling glitch.
+            "unreadable_members": archive_scan.get("unreadable") or [],
+            # The artifact itself could not be read, so nothing was analysed.
+            "artifact_unreadable": artifact_unreadable,
             "static": {
                 "suspicious_sections": pe_info.get("suspicious_sections", []),
                 "pe_sections":         pe_info.get("pe_sections", []),
@@ -1297,6 +1535,10 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "iocs":     iocs,
             "apk":      apk_info,
             "document": doc_info,
+            "lnk":      lnk_info,
+            "html":     html_info,
+            "extension": extension_info,
+            "script":   script_info,
         }
 
         # ── 4. Attribution Scoring ───────────────────────────────────────────
@@ -1324,12 +1566,20 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         score_data["pe_sections"] = pe_info.get("pe_sections", [])
         if archive_contents:
             score_data["archive_contents"] = archive_contents
-            # A truncated archive was only partly examined — say so in the report
-            # rather than letting "nothing found" imply "nothing there".
-            if archive_scan.get("truncated"):
-                score_data["archive_truncated"] = archive_scan["truncated"]
-            if archive_scan.get("unreadable"):
-                score_data["archive_unreadable"] = archive_scan["unreadable"]
+        # Deliberately OUTSIDE the block above. These say "part of this archive
+        # was not examined", and the worst case for that is an archive where
+        # NOTHING was examined — which leaves archive_contents empty and, while
+        # they were gated on it, silently dropped the warning in exactly the
+        # case that most needed it. A password-protected archive extracts no
+        # members at all, so it never once produced a caveat.
+        if archive_scan.get("truncated"):
+            score_data["archive_truncated"] = archive_scan["truncated"]
+        if archive_scan.get("unreadable"):
+            score_data["archive_unreadable"] = archive_scan["unreadable"]
+        if archive_scan.get("encrypted"):
+            score_data["archive_encrypted"] = archive_scan["encrypted"]
+        if archive_scan.get("unsupported_container"):
+            score_data["archive_unsupported"] = archive_scan["unsupported_container"]
         if apk_info.get("is_apk"):
             score_data["apk_info"] = apk_info
         if doc_info and doc_info.get("doc_type") not in (None, "unknown"):

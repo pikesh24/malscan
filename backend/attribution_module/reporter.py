@@ -477,15 +477,37 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 {% endif %}
 
 <!-- ============ ARCHIVE CONTENTS ============ -->
-{% if score_data.get('archive_contents') %}
+{# Also renders when there are no contents at all: an archive nothing could be
+   extracted from is precisely when the reader needs to be told why. #}
+{% if score_data.get('archive_contents') or score_data.get('archive_encrypted')
+      or score_data.get('archive_truncated') or score_data.get('archive_unreadable')
+      or score_data.get('archive_unsupported') %}
 {% set sec.n = sec.n + 1 %}
 <section class="sec">
   <div class="sec-head">
     <span class="sec-num">{{ "%02d"|format(sec.n) }}</span>
-    <span class="sec-title">Archive Contents ({{ score_data.get('archive_contents')|length }} files)</span>
+    <span class="sec-title">Archive Contents
+      {% if score_data.get('archive_contents') %}({{ score_data.get('archive_contents')|length }} files){% else %}(not examined){% endif %}
+    </span>
     <span class="sec-rule"></span>
   </div>
   <div class="card avoid">
+    {% if score_data.get('archive_unsupported') %}
+    <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
+      <strong>{{ score_data.get('archive_unsupported') }} archives cannot be opened by this scanner.</strong>
+      Nothing inside was extracted, hashed, YARA-scanned or analysed. A clean result here means
+      the contents could not be read, not that they are safe — extract it and submit the
+      contents individually.
+    </div>
+    {% endif %}
+    {% if score_data.get('archive_encrypted') %}
+    <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
+      <strong>This archive is password-protected.</strong>
+      {{ score_data.get('archive_encrypted')|length }} file(s) could not be extracted, so they were
+      NOT scanned for malware — no hash lookup, no YARA rules and no file analysis ran against them.
+      A clean result here means the contents could not be examined, not that they are safe.
+    </div>
+    {% endif %}
     {% if score_data.get('archive_truncated') %}
     <div style="font-size:10px;padding:0 0 8px 0;color:var(--amber);">
       Only part of this archive was examined — {{ score_data.get('archive_truncated') }}.
@@ -497,7 +519,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
       commonly because antivirus quarantined them — they were NOT analysed.
     </div>
     {% endif %}
-    {% for f in score_data.get('archive_contents') %}
+    {# `or []` matters: this section now renders for an archive with no
+       extractable members, where archive_contents is absent entirely. #}
+    {% for f in score_data.get('archive_contents') or [] %}
     <div style="font-family:var(--mono);font-size:10px;padding:7px 0;border-bottom:1px solid var(--border);">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <span style="word-break:break-all;">
@@ -741,8 +765,14 @@ def generate_report(job_id: str, score_data: dict, raw_data: dict) -> str:
         "Clear": "No indicators of compromise were identified. This artifact appears safe based on the checks performed.",
         "Suspicious": "This artifact shows some warning signs. It isn't confirmed malicious — but treat it with caution.",
         "Malicious": "This artifact matches known-bad patterns with high confidence. Do not open, run, or trust it.",
-        "Inconclusive": "This scan did not complete — VirusTotal, the verdict-critical source, was unavailable. No indicators were found, but that is not the same as safe. Re-scan before trusting this artifact.",
+        # Fallback only. There is more than one way to end up unable to conclude
+        # (intel did not return; the contents could not be examined at all), and
+        # naming the wrong one is worse than being vague — scoring emits the
+        # specific reason, which is preferred just below.
+        "Inconclusive": "This scan could not reach a conclusion. No indicators were found, but that is not the same as safe. Re-scan before trusting this artifact.",
     }.get(verdict, "")
+    if verdict == "Inconclusive" and score_data.get("inconclusive_reason"):
+        verdict_sentence = score_data["inconclusive_reason"]
 
     vt_stats = osint.get("virustotal") if osint else None
     vt_detections = (osint.get("virustotal_detections") or []) if osint else []

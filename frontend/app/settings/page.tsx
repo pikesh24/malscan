@@ -45,10 +45,12 @@ export default function SettingsPage() {
     setTestState("idle")
   }
 
+  // Tests the URL in the box, not whatever the app is currently pointed at, and
+  // without saving it — a test that silently persists its input makes "try a
+  // value" indistinguishable from "commit to it".
   const handleTest = async () => {
-    setApiBaseUrl(url.trim())
     setTestState("testing")
-    setTestState((await checkBackendHealth()) ? "ok" : "fail")
+    setTestState((await checkBackendHealth(url.trim())) ? "ok" : "fail")
   }
 
   const testLabel =

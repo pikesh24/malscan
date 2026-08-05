@@ -242,6 +242,12 @@ _LABEL_TO_AXIS = {
     "PE Section Entropy":                       "behavioral_signals",
     "Document Threat Analysis":                 "behavioral_signals",
     "APK Permissions":                          "behavioral_signals",
+    # What a shortcut would execute is a statement about behaviour, not about
+    # the file's reputation or where it is hosted.
+    "Shortcut Command Line":                    "behavioral_signals",
+    "HTML Attachment":                          "behavioral_signals",
+    "Extension Permissions":                    "behavioral_signals",
+    "Script Behaviour":                         "behavioral_signals",
     "ThreatFox IOC Match":                      "network_reputation",
     "URLhaus Malware Distribution":             "network_reputation",
     "AbuseIPDB Abuse Confidence":               "network_reputation",
@@ -485,6 +491,262 @@ def _check_urlscan(osint):
     return score, reasons
 
 
+# Weights for shortcut findings, keyed on lnk_analyzer's stable codes rather
+# than its display wording. Unlike the registrar and hosting weights these are
+# NOT measured against a base-rate sample — no such sample exists for shortcuts.
+# They are set from how often each thing appears in a shortcut somebody made on
+# purpose: an ordinary Windows shortcut points at an application and passes no
+# arguments at all, so most of these are near-zero events rather than merely
+# unusual ones.
+_LNK_WEIGHTS = {
+    "encoded_command":        45,   # base64 payload inside a shortcut; no benign use
+    "whitespace_padding":     45,   # exists only to hide the command from the user
+    "invoke_expression":      35,
+    "download_cradle":        35,
+    "certutil_abuse":         35,
+    "mshta_remote":           30,
+    "document_icon_disguise": 30,   # the disguise itself
+    "rundll32_script":        25,
+    "base64_decode":          25,
+    "hidden_execution":       20,
+    "interpreter_target":     15,   # legitimate but uncommon on its own
+    "hidden_window":          15,
+    "unc_path":               10,
+    "contains_url":           10,
+    "long_command_line":      10,
+    "user_writable_dir":       5,   # true of plenty of ordinary installers
+}
+
+
+def _check_lnk(analysis_data: dict):
+    """Scores a Windows shortcut by what it would actually run.
+
+    A .lnk is a stored command line, which is why it is a standard delivery and
+    persistence artifact — it arrives looking like an invoice and executes
+    whatever it says. Nothing here used to parse them, so a shortcut carrying an
+    encoded PowerShell payload was scanned as an unremarkable small binary.
+
+    An ordinary shortcut produces no findings at all: it points at an
+    application and passes no arguments. That is what makes even the modest
+    weights defensible — the baseline really is zero, not "a bit noisy".
+    """
+    lnk = analysis_data.get("lnk") or {}
+    if not lnk.get("is_lnk"):
+        return 0, []
+
+    score = sum(_LNK_WEIGHTS.get(code, 0) for code in lnk.get("codes") or [])
+    reasons = [f"Shortcut: {finding}" for finding in lnk.get("suspicious") or []]
+
+    args = (lnk.get("arguments") or "").strip()
+    if args and score:
+        # The command line is the evidence; show it rather than only describing it.
+        reasons.append(f"Shortcut command line: {args[:200]}")
+
+    return min(score, 100), reasons
+
+
+# HTML attachment weights. Most individual signals here are deliberately near
+# zero: a "download" attribute and a scripted .click() describe every download
+# button on the web, and copy-to-clipboard is on every code snippet. What
+# separates a smuggling page from a normal one is the COMBINATION, so the
+# conjunctions below carry the weight — the same shape as the APK
+# overlay-plus-accessibility rule, which is the best-calibrated check here.
+_HTML_WEIGHTS = {
+    "smuggled_payload":       60,   # decoded to a real executable/archive: evidence, not a hint
+    "int_array_payload":      35,   # payload as integers, purely to dodge base64 checks
+    "meta_refresh_data_uri":  25,
+    "data_uri_octet_stream":  25,
+    "run_dialog_lure":        30,   # "press Windows+R" has no legitimate use in an attachment
+    "shell_command_text":     20,
+    "ms_save_blob":           15,   # legacy IE API, rare outside smuggling kits
+    "obfuscation":            10,
+    "large_encoded_blob":     10,
+    "blob_construction":       5,
+    "object_url":              5,
+    "base64_decode":           5,
+    "clipboard_write":         5,   # every documentation site has a copy button
+    "forced_download":         0,   # ordinary download buttons
+    "synthetic_click":         0,   # ordinary download buttons
+}
+
+
+def _check_html(analysis_data: dict):
+    """Scores an HTML attachment for smuggling and clipboard-injection lures.
+
+    An HTML attachment carries no macro and often no URL, so it used to read as
+    inert text: low entropy, no indicators, no YARA hit, Clear. The payload is
+    inside the page, assembled by script in the browser, which is precisely why
+    nothing on the network path ever sees it.
+    """
+    html = analysis_data.get("html") or {}
+    if not html.get("is_html") or not html.get("codes"):
+        return 0, []
+
+    codes = set(html["codes"])
+    score = sum(_HTML_WEIGHTS.get(code, 0) for code in codes)
+    reasons = [f"HTML: {finding}" for finding in html.get("findings") or []]
+
+    # Assembling a file in memory AND handing it to the user is the technique.
+    # Either half alone is ordinary.
+    if {"blob_construction", "object_url"} <= codes and codes & {"forced_download", "synthetic_click"}:
+        score += 30
+        reasons.append(
+            "HTML: builds a file in memory and downloads it without contacting the network — "
+            "the HTML smuggling pattern (MITRE T1027.006), which is invisible to gateways "
+            "that inspect downloads."
+        )
+
+    # A page that puts a command on the clipboard and tells the user to run it.
+    # No file is ever downloaded, so the page is the only artifact that exists.
+    if "clipboard_write" in codes and codes & {"run_dialog_lure", "shell_command_text"}:
+        score += 40
+        reasons.append(
+            "HTML: writes a command to the clipboard and instructs the user to run it — "
+            "the ClickFix / fake-CAPTCHA pattern. Nothing is downloaded, so no file scan "
+            "would ever see the payload."
+        )
+
+    return min(score, 100), reasons
+
+
+# Browser extension weights. Broad permissions are genuinely common among
+# legitimate extensions -- ad blockers need to see every request, password
+# managers need every site -- so single permissions are weighted low and the
+# combinations carry the verdict, as with the APK and HTML checks.
+_EXTENSION_WEIGHTS = {
+    "perm_debugger":        35,   # full control of every page; almost never legitimate
+    "perm_nativeMessaging": 30,   # bridges the browser sandbox to a local program
+    "remote_code":          30,   # what runs is not what was reviewed
+    "perm_proxy":           25,
+    "perm_management":      20,   # can disable other extensions, including security ones
+    "unsafe_csp":           15,
+    "perm_cookies":         15,
+    "perm_webRequestBlocking": 10,
+    "perm_clipboardRead":   10,
+    "perm_webRequest":       5,
+    "perm_declarativeNetRequest": 5,
+    "perm_history":          5,
+    "perm_tabs":             5,
+    "perm_downloads":        5,
+    "perm_scripting":        5,
+    "perm_privacy":          5,
+    "perm_contentSettings":  5,
+    "all_sites":             5,   # true of most useful extensions on its own
+}
+
+
+def _check_extension(analysis_data: dict):
+    """Scores a browser extension by what its manifest asks to reach.
+
+    A .crx is a ZIP, so the archive walk already hashed its members and found
+    nothing interesting -- the manifest is small JSON and the payload is
+    ordinary JavaScript. The permission model was never read, exactly as the APK
+    manifest was not read before that path was fixed.
+    """
+    ext = analysis_data.get("extension") or {}
+    if not ext.get("is_extension") or not ext.get("codes"):
+        return 0, []
+
+    codes = set(ext["codes"])
+    score = sum(_EXTENSION_WEIGHTS.get(code, 0) for code in codes)
+    name = ext.get("name") or "extension"
+    reasons = [f"Extension '{name}': {finding}" for finding in ext.get("findings") or []]
+
+    # Every site plus cookies is a live-session harvester: a stolen session token
+    # skips the login entirely, so multi-factor authentication does not help.
+    if "all_sites" in codes and "perm_cookies" in codes:
+        score += 35
+        reasons.append(
+            f"Extension '{name}': can read cookies on every site the user visits — enough to "
+            f"lift live session tokens, which bypasses multi-factor login."
+        )
+
+    # Reading every request across every site is wholesale traffic interception.
+    if "all_sites" in codes and codes & {"perm_webRequest", "perm_webRequestBlocking"}:
+        score += 20
+        reasons.append(
+            f"Extension '{name}': can observe or alter every network request on every site."
+        )
+
+    return min(score, 100), reasons
+
+
+# Script dropper weights. The split is deliberate and load-bearing: the Windows
+# Script Host / ActiveX surface does not exist in a browser, so a delivered .js
+# reaching for WScript.Shell is a WSH program rather than a web script that
+# happens to be minified. Obfuscation, by contrast, describes every minified
+# library on the internet -- weighting it heavily would flag jQuery -- so it
+# scores almost nothing alone and earns its keep only next to a real behaviour.
+_SCRIPT_WEIGHTS = {
+    "adodb_stream":         30,   # writing downloaded bytes to disk
+    "amsi_bypass":          30,   # no legitimate use whatsoever
+    "wsh_shell":            25,
+    "powershell_launch":    25,
+    "registry_persistence": 20,
+    "scheduled_task":       20,
+    "bitsadmin":            20,
+    "shell_run":            15,
+    "hidden_window":        15,
+    "http_request":         10,
+    "eval_exec":            10,
+    "activex":              10,
+    "filesystem_object":     5,
+    # Obfuscation: reported, barely scored.
+    "char_code_assembly":    5,
+    "reverse_trick":         5,
+    "hex_escapes":           5,
+    "string_splicing":       0,   # true of most minified code
+    "base64_blob":           5,
+}
+
+# Downloading and then writing to disk is a dropper, whatever the wrapper looks
+# like. Either half alone is ordinary automation.
+_DROPPER_CHAIN = ({"http_request", "adodb_stream"}, 30,
+                  "downloads a file and writes it to disk — a dropper chain")
+_EXECUTION_CHAIN = ({"http_request", "shell_run"}, 20,
+                    "downloads content and executes a command")
+
+
+def _check_script(analysis_data: dict):
+    """Scores a script by what it would do, not by how unreadable it is.
+
+    Scripts were covered only by raw string matching and YARA, which finds the
+    plain ones and misses everything obfuscated -- and obfuscation is the norm,
+    because a script is text and rewriting text is free. PowerShell had YARA
+    rules; Windows Script Host (.js, .vbs, .wsf, .hta) had nothing at all.
+    """
+    script = analysis_data.get("script") or {}
+    if not script.get("is_script") or not script.get("codes"):
+        return 0, []
+
+    codes = set(script["codes"])
+    score = sum(_SCRIPT_WEIGHTS.get(code, 0) for code in codes)
+    kind = script.get("script_type") or "Script"
+    reasons = [f"{kind}: {finding}" for finding in script.get("findings") or []]
+
+    for required, bonus, description in (_DROPPER_CHAIN, _EXECUTION_CHAIN):
+        if required <= codes:
+            score += bonus
+            reasons.append(f"{kind}: {description}.")
+
+    # Obfuscation is a multiplier on a real behaviour, never a finding by itself.
+    obfuscation = codes & {"char_code_assembly", "hex_escapes", "reverse_trick", "base64_blob"}
+    # eval_exec is deliberately absent. Building code at run time is what a
+    # JSON-schema compiler or a template engine does for a living, and paired
+    # with fromCharCode it described ajv and half of npm as "deliberate
+    # concealment". The Script Host behaviours below have no such innocent read.
+    behaviour = codes & {"wsh_shell", "adodb_stream", "http_request", "shell_run",
+                         "powershell_launch"}
+    if obfuscation and behaviour:
+        score += 15
+        reasons.append(
+            f"{kind}: the code is obfuscated AND performs download or execution — "
+            f"deliberate concealment of what it does, not minification."
+        )
+
+    return min(score, 100), reasons
+
+
 def _check_resource_chain(osint):
     """Scores the third parties a page loads, not just the page.
 
@@ -656,6 +918,19 @@ def _check_apk_permissions(apk_data):
         reasons.append(
             "APK combines screen overlay with accessibility control — the exact pattern used by "
             "banking-overlay trojans to capture credentials."
+        )
+    # NFC alone is unremarkable: payment, transit and access-badge apps all use
+    # it. Paired with the ability to drive the screen or fake one, it is the
+    # contactless-relay pattern that emerged in 2026 banking malware, where the
+    # app reads a card and relays it to an attacker's terminal in real time.
+    if "android.permission.NFC" in perm_set and perm_set & {
+        "android.permission.BIND_ACCESSIBILITY_SERVICE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+    }:
+        score += 20
+        reasons.append(
+            "APK combines NFC access with screen overlay or accessibility control — the "
+            "contactless-relay pattern, where card data is read and forwarded in real time."
         )
 
     # Permission volume no longer scores, but the report still says what the app
@@ -919,7 +1194,14 @@ def calculate_score(analysis_data: dict) -> dict:
     record("MalwareBazaar Hash Match", mb_score)
 
     # YARA rule matches (pattern-based, very high confidence)
-    yara_score, r = _check_yara(osint); intel_total += yara_score; artifact_total += yara_score; all_reasons += r
+    # Heuristic, not intel: YARA is a pattern match Malscan runs itself, so it
+    # belongs with the other local analysis rather than with third-party
+    # corroboration. Filed under intel it did two wrong things at once — it
+    # counted as an outside opinion confirming Malscan's own finding, and it was
+    # exempt from the benign-consensus dampener that every other local signal is
+    # subject to. One broad rule (PDF_AutoAction, +25, matches a large share of
+    # ordinary PDFs) was enough to flag benign form PDFs on both counts.
+    yara_score, r = _check_yara(osint); heuristic_total += yara_score; artifact_total += yara_score; all_reasons += r
     record("YARA Rule Matches", yara_score)
 
     # ── Tier 2: IOC-based threat intelligence ─────────────────────────────────
@@ -1008,6 +1290,16 @@ def calculate_score(analysis_data: dict) -> dict:
     record("Resource Chain", s)
     s, r      = _check_apk_permissions(analysis_data.get("apk", {})); heuristic_total += s; artifact_total += s; all_reasons += r
     record("APK Permissions", s)
+    # Artifact evidence: the shortcut IS the submitted thing, and what it would
+    # run is read out of its own structure rather than inferred.
+    s, r      = _check_lnk(analysis_data);         heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Shortcut Command Line", s)
+    s, r      = _check_html(analysis_data);        heuristic_total += s; artifact_total += s; all_reasons += r
+    record("HTML Attachment", s)
+    s, r      = _check_extension(analysis_data);   heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Extension Permissions", s)
+    s, r      = _check_script(analysis_data);      heuristic_total += s; artifact_total += s; all_reasons += r
+    record("Script Behaviour", s)
 
     # Whether a verdict-critical intel source (VirusTotal) did NOT complete on
     # this run — set by app/main.py. A partial scan is stored but never cached,
@@ -1021,10 +1313,29 @@ def calculate_score(analysis_data: dict) -> dict:
     # when VT actually returned a verdict (40+ engines) AND the scan is complete;
     # a partial/absent VT result never dampens (that path is marked partial and
     # not cached, so it can't freeze a wrongly-low score).
-    vt_stats = (osint.get("virustotal") or {}).get("stats") or {}
+    vt_result = osint.get("virustotal") or {}
+    vt_stats = vt_result.get("stats") or {}
     vt_engines = sum(vt_stats.get(k, 0) for k in ("malicious", "suspicious", "harmless", "undetected"))
+    # A first submission is not a consensus. When the hash is unknown to VT the
+    # pipeline uploads the sample, and the fresh scan comes back with the full
+    # engine list reporting "undetected" — indistinguishable, by these counters,
+    # from a file those engines had held and cleared for years. It is the
+    # opposite: nobody had ever seen it. Dampening on that reads missing
+    # evidence as reassurance, and halved banking-trojan APKs into Clear.
+    # `uploaded` covers the scan that created the record; times_submitted covers
+    # every scan after it, where the hash now resolves but the only submission
+    # on file is still our own. Both describe one sample nobody else has seen.
+    _times_submitted = vt_result.get("times_submitted")
+    vt_first_submission = bool(vt_result.get("uploaded")) or (
+        _times_submitted is not None and _times_submitted <= 1
+    )
+    # This gate asks "did anyone independently corroborate this?" — so it counts
+    # only outside sources. YARA now scores as a heuristic (see above), which is
+    # what keeps a broad local rule from vouching for itself and switching the
+    # dampener off. See tests/live/yara_false_positives.py.
     if (
         not intel_partial
+        and not vt_first_submission
         and heuristic_total > 0
         and intel_total == 0
         and vt_engines >= 40
@@ -1086,9 +1397,20 @@ def calculate_score(analysis_data: dict) -> dict:
     # Deliberately narrow: Malicious/Suspicious are NOT downgraded. Missing
     # intel did not prevent those detections, and relabelling a real detection
     # as "Inconclusive" would bury a true positive — the worse failure.
+    # Why a Clear was withheld, in the report's own words. The presentation
+    # layer used to hard-code the VirusTotal explanation for every Inconclusive
+    # verdict, which would have made an unexaminable archive claim that
+    # VirusTotal was down.
+    inconclusive_reason = None
+
     if intel_partial:
         if verdict == "Clear":
             verdict = "Inconclusive"
+            inconclusive_reason = (
+                "This scan did not complete — VirusTotal, the verdict-critical source, "
+                "was unavailable. No indicators were found, but that is not the same as "
+                "safe. Re-scan before trusting this artifact."
+            )
             all_reasons.append(
                 "⚠ INCONCLUSIVE — not a clean bill of health. No indicators were found, "
                 "but threat-intelligence was incomplete on this scan: VirusTotal (the "
@@ -1102,12 +1424,96 @@ def calculate_score(analysis_data: dict) -> dict:
                 "provisional and may change — re-scan to refresh it."
             )
 
+    # Same honesty rule, different cause: content that could not be examined at
+    # all. A password-protected archive yields no members, so every per-file
+    # detector is bypassed and "no indicators found" describes a scan that never
+    # saw the files. Unlike the intel case, re-scanning will not help — the
+    # password is needed — so the wording asks for that instead.
+    #
+    # Ordered after the intel branch and gated on Clear for the same reason it
+    # is: a real detection must never be relabelled Inconclusive and buried.
+    unexaminable = analysis_data.get("unexaminable") or []
+    unsupported_container = analysis_data.get("unsupported_container")
+
+    if unexaminable and verdict == "Clear":
+        verdict = "Inconclusive"
+        listed = ", ".join(unexaminable[:3]) + (" …" if len(unexaminable) > 3 else "")
+        inconclusive_reason = (
+            f"The contents of this archive are password-protected and could not be "
+            f"extracted, so the {len(unexaminable)} file(s) inside were never scanned. "
+            f"Nothing was found because nothing could be examined — that is not the "
+            f"same as safe. Unpack it with the password and scan the contents."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — the archive is password-protected, so its "
+            f"{len(unexaminable)} member(s) could not be extracted or scanned: {listed}. "
+            f"No hash lookup, YARA rule or file analysis ran against them. This is a "
+            f"known way of moving a sample past scanners — re-submit the contents "
+            f"unpacked to get a real verdict."
+        )
+    elif analysis_data.get("unreadable_members") and verdict == "Clear":
+        # A member that extracted and then could not be read is almost always
+        # antivirus taking it in between — which is evidence about that member,
+        # not a tooling glitch. The same reasoning already applies to the
+        # top-level artifact; leaving it out here meant a malicious payload
+        # inside a ZIP came back Clear with no reasons at all, because the file
+        # that would have produced them had been confiscated.
+        verdict = "Inconclusive"
+        members = analysis_data["unreadable_members"]
+        listed = ", ".join(members[:3]) + (" …" if len(members) > 3 else "")
+        inconclusive_reason = (
+            f"{len(members)} file(s) inside this archive could not be read after being "
+            f"extracted ({listed}), so they were never scanned. The usual cause is "
+            f"antivirus on the scanning server quarantining them — which is a reason to "
+            f"treat the archive as dangerous, not safe."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — {len(members)} archive member(s) could not be read after "
+            f"extraction and were never analysed: {listed}. This commonly means antivirus "
+            f"removed them, which is a signal in its own right rather than an absence of one."
+        )
+    elif analysis_data.get("artifact_unreadable") and verdict == "Clear":
+        # Nothing at all was analysed, so this is the strongest possible case
+        # for refusing to say Clear. The usual cause — antivirus on the scanning
+        # host confiscating the sample — is itself evidence about the file, so
+        # the wording says so rather than reporting a bland I/O error.
+        verdict = "Inconclusive"
+        reason_code = analysis_data["artifact_unreadable"]
+        inconclusive_reason = (
+            f"The submitted file could not be read ({reason_code}), so nothing was analysed "
+            f"at all. The usual cause is antivirus on the scanning server quarantining the "
+            f"file — which is itself a reason to treat it as dangerous, not safe."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — the file could not be read ({reason_code}) and no analysis ran: "
+            f"no hash lookup, no YARA, no static or document analysis. This commonly means "
+            f"antivirus on the scanning server removed it, which is a signal in its own right. "
+            f"Treat this file as untrusted until it can be examined."
+        )
+    elif unsupported_container and verdict == "Clear":
+        # Distinct wording on purpose. Telling someone their 7-Zip archive is
+        # password-protected would be a confident, specific, wrong explanation —
+        # the same failure as the hard-coded VirusTotal sentence this replaced.
+        verdict = "Inconclusive"
+        inconclusive_reason = (
+            f"This is a {unsupported_container} archive, a format this scanner cannot "
+            f"open, so nothing inside it was examined. Nothing was found because "
+            f"nothing could be read — that is not the same as safe. Extract it and "
+            f"submit the contents individually."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — {unsupported_container} archives cannot be extracted by "
+            f"this scanner, so no file inside was hashed, YARA-scanned or analysed. "
+            f"Re-submit the contents unpacked to get a real verdict."
+        )
+
     return {
         "score":       final_score,
         "verdict":     verdict,
         "family":      family or "Unknown",
         "attribution": attribution or "Unattributed",
         "partial":     intel_partial,
+        "inconclusive_reason": inconclusive_reason,
         "reasons":     all_reasons,
         "indicators": {
             "ips":     iocs.get("ips", []),

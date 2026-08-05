@@ -15,8 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Malscan",
-  description: "Threat Analysis Tool",
+  title: "Malscan — Threat Visualized",
+  description:
+    "Static analysis, threat intelligence and infrastructure mapping for files and URLs.",
 };
 
 export default function RootLayout({

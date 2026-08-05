@@ -34,7 +34,36 @@ MAGIC_SIGNATURES = [
     (b"\x23\x21",                "Script / Shebang (shell script, Python, etc.)"),
     (b"\xFF\xD8\xFF",            "JPEG Image"),
     (b"\x89PNG",                 "PNG Image"),
+    (b"\xFD7zXZ\x00",           "XZ Compressed"),
+    # HeaderSize 0x4C followed by the Shell Link CLSID. The leading four bytes
+    # alone are just a small integer and would collide with plenty of files, so
+    # the CLSID is part of the signature — which is why the header read below is
+    # 32 bytes rather than 16.
+    (b"\x4C\x00\x00\x00\x01\x14\x02\x00\x00\x00\x00\x00\xC0\x00\x00\x00\x00\x00\x00\x46",
+     "Windows Shortcut (LNK)"),
 ]
+
+# Enough for the longest prefix signature above.
+_HEADER_READ_BYTES = 32
+
+# Formats whose signature is NOT at offset 0, so the prefix scan above can never
+# see them. Both are ordinary malware carriers — an ISO is the standard way to
+# deliver a payload without the mark-of-the-web that would otherwise warn the
+# user, and .tar.gz is routine on Linux/macOS — and both previously came back as
+# "Unknown", which reads in a report as "nothing recognisable here".
+#
+# ISO 9660 repeats its descriptor every 2048 bytes from 0x8000; checking the
+# first three covers plain ISO, UDF hybrids and most .img files.
+OFFSET_SIGNATURES = [
+    (257,   b"ustar",  "TAR Archive"),
+    (32769, b"CD001",  "ISO 9660 Disc Image"),
+    (34817, b"CD001",  "ISO 9660 Disc Image"),
+    (36865, b"CD001",  "ISO 9660 Disc Image"),
+]
+
+# The largest offset above, plus the signature length — how much of a file has to
+# be readable before every signature has had its chance.
+_MAX_SIGNATURE_REACH = 36865 + 5
 
 # ── Suspicious string patterns ────────────────────────────────────────────────
 
@@ -102,7 +131,7 @@ def _file_entropy(data: bytes) -> float:
     return round(entropy, 3)
 
 
-def detect_file_type(file_path: str, data: bytes = None) -> dict:
+def detect_file_type(file_path: str, data: bytes = None, filename: str = None) -> dict:
     """
     Reads the first 16 bytes and matches against known magic signatures.
     Returns declared type from filename extension and detected type from bytes.
@@ -110,19 +139,40 @@ def detect_file_type(file_path: str, data: bytes = None) -> dict:
     """
     result = {"magic_type": "Unknown", "extension": "", "type_mismatch": False}
     try:
-        ext = os.path.splitext(file_path)[1].lower()
+        # The SUBMITTED name, not the stored one. Uploads are saved to the vault
+        # as their SHA-256 with no extension at all, so reading it from
+        # `file_path` meant `ext` was always "" — and the type-mismatch check
+        # below, worth +30 for a "deliberate disguise", could never once fire in
+        # production. A PE renamed to photo.jpg scored 8 (entropy) instead of 38.
+        ext = os.path.splitext(filename or file_path)[1].lower()
         result["extension"] = ext
 
         if data is not None:
-            header = data[:16]
+            header = data[:_HEADER_READ_BYTES]
         else:
             with open(file_path, "rb") as f:
-                header = f.read(16)
+                header = f.read(_HEADER_READ_BYTES)
 
         for magic, type_name in MAGIC_SIGNATURES:
             if header[:len(magic)] == magic:
                 result["magic_type"] = type_name
                 break
+
+        # Only when nothing matched at offset 0. Reading further costs an extra
+        # seek, and a file that already identified as a PE or a ZIP is not also
+        # an ISO.
+        if result["magic_type"] == "Unknown":
+            probe = data
+            if probe is None or len(probe) < _MAX_SIGNATURE_REACH:
+                try:
+                    with open(file_path, "rb") as f:
+                        probe = f.read(_MAX_SIGNATURE_REACH)
+                except OSError:
+                    probe = probe or b""
+            for offset, magic, type_name in OFFSET_SIGNATURES:
+                if probe[offset:offset + len(magic)] == magic:
+                    result["magic_type"] = type_name
+                    break
 
         # Flag if a file claims to be an image/text but is actually an executable
         if result["magic_type"] in (
@@ -184,8 +234,19 @@ def is_reportable_url(url: str) -> bool:
     if not host:
         return False
     try:
-        ipaddress.ip_address(host)   # bare-IP host is fine
-        return True
+        ipaddress.ip_address(host)
+        # A URL is held to the same standard as a bare IP. Without this the two
+        # policies disagreed: `10.0.0.5` on its own was correctly rejected as an
+        # indicator, while `http://10.0.0.5/panel` was accepted and then scored
+        # 25 for "raw IP address — common in C2 and phishing" — the identical
+        # score a genuine public C2 address gets.
+        #
+        # That fired on perfectly ordinary content: a docker-compose file, a
+        # README, an internal wiki page naming an admin panel. It also published
+        # the reader's internal addressing into the indicator list, which is
+        # noise at best. Loopback was already being filtered further down the
+        # pipeline, so the behaviour was inconsistent as well as wrong.
+        return is_reportable_ip(host)
     except ValueError:
         pass
     return "." in host   # otherwise require a dotted FQDN
@@ -273,7 +334,7 @@ def analyze_suspicious_strings(file_path: str, data: bytes = None) -> dict:
     return result
 
 
-def analyze_pe(file_path: str, data: bytes = None) -> dict:
+def analyze_pe(file_path: str, data: bytes = None, filename: str = None) -> dict:
     """
     Analyses Windows Executable (PE) metadata and anomalies.
     Pass `data` to reuse already-read bytes for entropy/type detection
@@ -302,7 +363,7 @@ def analyze_pe(file_path: str, data: bytes = None) -> dict:
     except Exception:
         raw = None
 
-    type_info = detect_file_type(file_path, data=raw)
+    type_info = detect_file_type(file_path, data=raw, filename=filename)
     results["magic_type"]    = type_info.get("magic_type", "Unknown")
     results["type_mismatch"] = type_info.get("type_mismatch", False)
 

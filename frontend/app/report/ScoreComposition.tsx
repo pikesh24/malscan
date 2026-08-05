@@ -1,20 +1,31 @@
 "use client"
 
-import { Check } from "lucide-react"
+import { Check, HelpCircle } from "lucide-react"
 
 type Entry = { label: string; points: number }
 
-export default function ScoreComposition({ breakdown, totalScore }: { breakdown: Entry[]; totalScore: number }) {
+// `clear` must be passed explicitly. An empty breakdown means "nothing scored",
+// which is only good news when the artifact was actually analysed. On an
+// Inconclusive scan the breakdown is empty precisely because nothing could be
+// checked, and painting that green would say "clean" about a file nobody read.
+export default function ScoreComposition({ breakdown, totalScore, clear }: { breakdown: Entry[]; totalScore: number; clear: boolean }) {
     if (!breakdown || breakdown.length === 0) {
         return (
             <div>
-                <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 py-1">
-                    <Check size={12} className="text-green-500 shrink-0" />
-                    No individual risk factors contributed to this score — the artifact came back clean on every check.
-                </div>
+                {clear ? (
+                    <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 py-1">
+                        <Check size={12} className="text-green-500 shrink-0" />
+                        No individual risk factors contributed to this score — the artifact came back clean on every check.
+                    </div>
+                ) : (
+                    <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 py-1">
+                        <HelpCircle size={12} className="text-slate-500 shrink-0" />
+                        Nothing was scored. That is the absence of a result, not a clean one — see the summary above for what could not be checked.
+                    </div>
+                )}
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-black/10">
                     <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500">Total Threat Score</span>
-                    <span className="text-sm font-mono font-bold text-green-600">{totalScore}<span className="text-gray-400 font-normal">/100</span></span>
+                    <span className={`text-sm font-mono font-bold ${clear ? "text-green-600" : "text-slate-500"}`}>{totalScore}<span className="text-gray-400 font-normal">/100</span></span>
                 </div>
             </div>
         )

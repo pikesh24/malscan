@@ -44,6 +44,12 @@ DANGEROUS_PERMISSIONS = {
     "android.permission.RECEIVE_BOOT_COMPLETED",
     "android.permission.BIND_DEVICE_ADMIN",
     "android.permission.BIND_ACCESSIBILITY_SERVICE",
+    # Contactless relay is a 2026 banking-malware technique: the app reads a
+    # card and relays it to an attacker terminal. Listed so it is reported;
+    # scoring deliberately gives it nothing on its own, because payment,
+    # transit and access-badge apps all use NFC legitimately.
+    "android.permission.NFC",
+    "android.permission.BIND_NFC_SERVICE",
 }
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
