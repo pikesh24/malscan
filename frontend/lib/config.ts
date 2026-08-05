@@ -43,9 +43,23 @@ export function apiUrl(path: string): string {
   return base.replace(/\/$/, "") + path.replace(/^\/api/, "")
 }
 
-export async function checkBackendHealth(): Promise<boolean> {
+/**
+ * Probes a backend and reports whether it answered.
+ *
+ * Pass an explicit baseUrl to test *that* host. Without it the probe follows
+ * getApiBaseUrl(), which on the web build deliberately ignores the stored
+ * override — so a Settings page that tested the typed URL this way was really
+ * testing the /api proxy, and reported "connected" for a host it had never
+ * contacted. Reporting a connection that was never attempted is the one answer
+ * this check must never give.
+ */
+export async function checkBackendHealth(baseUrl?: string): Promise<boolean> {
+  const explicit = baseUrl?.trim()
+  const target = explicit
+    ? explicit.replace(/\/$/, "") + "/status/health-ping"
+    : apiUrl("/api/status/health-ping")
   try {
-    const res = await fetch(apiUrl("/api/status/health-ping"), { cache: "no-store" })
+    const res = await fetch(target, { cache: "no-store" })
     return res.ok || res.status === 404
   } catch {
     return false

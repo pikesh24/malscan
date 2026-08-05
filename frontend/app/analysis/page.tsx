@@ -29,10 +29,17 @@ function AnalysisContent() {
   const [progress, setProgress] = useState(0)
   const [realStatus, setRealStatus] = useState("SUBMITTED")
 
+  // These mirror the real pipeline in backend/app/main.py (stages 1 to 7). They
+  // previously named an isolated sandbox, an artifact volume, API import
+  // reconstruction and passive-DNS clusters — none of which Malscan has. A
+  // scanner that overstates what it did on the way to a verdict has no standing
+  // to be believed about the verdict, so the list stays tied to the code.
   const steps = [
-    "ALLOCATING_ISOLATED_SANDBOX", "MOUNTING_ARTIFACT_VOLUME", "CALCULATING_HASHES (SHA256/MD5)",
-    "PE_HEADER_PARSING", "STRING_EXTRACTION & OBFUSCATION_CHECK", "YARA_RULE_MATCHING (v2024.01)",
-    "API_IMPORT_RECONSTRUCTION", "QUERYING_PASSIVE_DNS_CLUSTERS", "GENERATING_FINAL_VERDICT"
+    "CALCULATING_HASHES (SHA256/MD5)", "DETECTING_FILE_TYPE (magic bytes)",
+    "EXTRACTING_ARCHIVE_MEMBERS", "ANALYSING_FORMAT (APK/OFFICE/PDF/LNK)",
+    "EXTRACTING_STRINGS & INDICATORS", "YARA_RULE_MATCHING",
+    "QUERYING_THREAT_INTELLIGENCE", "CLUSTERING_SHARED_INFRASTRUCTURE",
+    "SCORING & GENERATING_VERDICT"
   ]
   const [currentStep, setCurrentStep] = useState(0)
 
