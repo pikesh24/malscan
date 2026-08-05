@@ -159,6 +159,58 @@ def test_ordinary_page_javascript_is_clean():
     assert _check_script({"script": info})[0] == 0
 
 
+def test_real_browser_library_idioms_do_not_score():
+    """Regression: axe-core scored 85 on Script Behaviour, ajv 30.
+
+    Every construct below is ordinary browser JavaScript, and each one was
+    matched by a rule written for Windows Script Host:
+
+      XMLHttpRequest   contains the substring XMLHTTP, so the MSXML2 ActiveX
+                       rule fired on every browser script ever written
+      .run(            `\\.(Run|Exec)\\s*[("']` under re.I — this is axe-core's
+                       own public API, and `.exec(` is the RegExp method
+      new Function(    how ajv compiles a JSON schema; paired with fromCharCode
+                       it was reported as "deliberate concealment"
+
+    The scanner deliberately treats a delivered .js reaching for the Script
+    Host surface as a WSH program, so these must stay separable from it.
+    """
+    from attribution_module.scoring import _check_script
+
+    library = (
+        b"var xhr=new XMLHttpRequest();xhr.open('GET',u);"
+        b"axe.run(ctx).then(function(r){return r});"
+        b"var re=/a(b)c/;re.exec(s);"
+        b"var f=new Function('a','return a');"
+        b"String.fromCharCode(72,105);"
+    )
+    info = analyze_script("x", data=library, filename="axe.min.js")
+    score, reasons = _check_script({"script": info})
+
+    assert score <= 15, f"browser library idioms scored {score}: {reasons}"
+    codes = set(info.get("codes") or [])
+    assert "shell_run" not in codes, "a .run()/.exec() method call is not command execution"
+    assert "http_request" not in codes, "XMLHttpRequest is not the MSXML2 ActiveX object"
+
+
+def test_wsh_command_execution_still_scores():
+    """The other side of the same rule — narrowing it must not blind it.
+
+    Both the VBScript statement form and the parenthesised WSH form have to
+    keep matching, since those are what a real dropper actually looks like.
+    """
+    from attribution_module.scoring import _check_script
+
+    for name, body in (
+        ("vbs statement", b'Set sh=CreateObject("WScript.Shell")\r\nsh.Run "calc.exe", 0, False\r\n'),
+        ("wsh js", b'var sh=new ActiveXObject("WScript.Shell");sh.Run("calc.exe");'),
+        ("named receiver", b'objShell.Exec("cmd /c whoami");'),
+    ):
+        info = analyze_script("x", data=body, filename="dropper.js")
+        assert "shell_run" in set(info.get("codes") or []), f"{name} no longer detected"
+        assert _check_script({"script": info})[0] > 0, f"{name} scored nothing"
+
+
 def test_obfuscation_alone_does_not_score():
     """String splicing and hex escapes are packing artefacts, not intent."""
     from attribution_module.scoring import _check_script

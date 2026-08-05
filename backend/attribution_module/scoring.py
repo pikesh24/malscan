@@ -731,8 +731,12 @@ def _check_script(analysis_data: dict):
 
     # Obfuscation is a multiplier on a real behaviour, never a finding by itself.
     obfuscation = codes & {"char_code_assembly", "hex_escapes", "reverse_trick", "base64_blob"}
+    # eval_exec is deliberately absent. Building code at run time is what a
+    # JSON-schema compiler or a template engine does for a living, and paired
+    # with fromCharCode it described ajv and half of npm as "deliberate
+    # concealment". The Script Host behaviours below have no such innocent read.
     behaviour = codes & {"wsh_shell", "adodb_stream", "http_request", "shell_run",
-                         "powershell_launch", "eval_exec"}
+                         "powershell_launch"}
     if obfuscation and behaviour:
         score += 15
         reasons.append(

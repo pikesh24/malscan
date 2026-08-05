@@ -68,13 +68,23 @@ _BEHAVIOUR_PATTERNS = [
     ("adodb_stream",
      re.compile(rb"ADODB\.Stream", re.I),
      "Uses ADODB.Stream — writes downloaded bytes to disk"),
+    # The bare `XMLHTTP` alternative that used to be here is a substring of
+    # `XMLHttpRequest`, so every browser script on earth reported "makes an HTTP
+    # request from script". Only the ActiveX ProgIDs mean Windows Script Host.
     ("http_request",
-     re.compile(rb"MSXML2\.XMLHTTP|WinHttp\.WinHttpRequest|ServerXMLHTTP|XMLHTTP", re.I),
+     re.compile(rb"MSXML2\.XMLHTTP|WinHttp\.WinHttpRequest|ServerXMLHTTP|Microsoft\.XMLHTTP", re.I),
      "Makes an HTTP request from script"),
-    # VBScript calls subs without parentheses (`sh.Run "a.exe", 0, False`), so
-    # requiring `(` missed the single most common form this appears in.
+    # Three shapes, none of which may match an ordinary JavaScript method call:
+    #   objShell.Run(...)     a receiver that names a shell
+    #   sh.Run "a.exe", 0     VBScript calls subs without parentheses, which is
+    #                         the most common form this appears in
+    #   sh.Run("a.exe")       WSH capitalisation, case-sensitive on purpose
+    # `\.(Run|Exec)\s*[\("']` under re.I matched `.run(` and `.exec(` — that is
+    # axe-core's own public API and the standard RegExp method respectively.
     ("shell_run",
-     re.compile(rb"\.(Run|Exec|ShellExecute)\s*[\(\"']", re.I),
+     re.compile(rb"(?:WScript|WSH|[A-Za-z_.]*shell[A-Za-z_]*)\s*\.\s*(?:Run|Exec|ShellExecute)\b"
+                rb"|\.\s*(?:Run|ShellExecute)\s+[\"']"
+                rb"|(?-i:\.(?:Run|ShellExecute)\s*\(\s*[\"'])", re.I),
      "Executes a command"),
     ("filesystem_object",
      re.compile(rb"Scripting\.FileSystemObject", re.I),

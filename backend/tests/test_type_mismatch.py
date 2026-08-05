@@ -44,10 +44,20 @@ def _disguise_flagged(results: dict) -> bool:
     return any("mismatch" in r.lower() for r in results.get("reasons") or [])
 
 
-@pytest.mark.parametrize("filename", ["photo.jpg", "scan.jpeg", "image.png",
-                                      "report.txt", "invoice.pdf", "data.csv"])
-def test_an_executable_wearing_an_innocent_extension_is_flagged(client, filename, request):
-    salt = abs(hash(filename)) % 250
+DISGUISED_NAMES = ["photo.jpg", "scan.jpeg", "image.png",
+                   "report.txt", "invoice.pdf", "data.csv"]
+HONEST_NAMES = ["setup.exe", "library.dll", "noextension"]
+
+
+@pytest.mark.parametrize("filename", DISGUISED_NAMES)
+def test_an_executable_wearing_an_innocent_extension_is_flagged(client, filename):
+    # Salts are fixed and disjoint across every test in this file. They used to
+    # be abs(hash(filename)) % 250, and Python randomises string hashing per
+    # process — so on some runs a salt collided with another test's payload,
+    # the debounce replayed that test's verdict for these bytes, and an
+    # honestly-named executable inherited a disguise finding. The failure moved
+    # around with test timing, which is exactly what made it look unrelated.
+    salt = 10 + DISGUISED_NAMES.index(filename)
     results = _scan(client, _pe(salt), filename)
 
     assert _disguise_flagged(results), (
@@ -55,9 +65,9 @@ def test_an_executable_wearing_an_innocent_extension_is_flagged(client, filename
     )
 
 
-@pytest.mark.parametrize("filename", ["setup.exe", "library.dll", "noextension"])
+@pytest.mark.parametrize("filename", HONEST_NAMES)
 def test_an_honestly_named_executable_is_not_flagged(client, filename):
-    salt = abs(hash(filename)) % 250
+    salt = 30 + HONEST_NAMES.index(filename)
     results = _scan(client, _pe(salt), filename)
 
     assert not _disguise_flagged(results), (
