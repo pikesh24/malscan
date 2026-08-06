@@ -1423,6 +1423,19 @@ def calculate_score(analysis_data: dict) -> dict:
                 "source such as VirusTotal did not return in time). This result is "
                 "provisional and may change — re-scan to refresh it."
             )
+    elif analysis_data.get("intel_unconfigured"):
+        # No VirusTotal key on this deployment, so reputation was never consulted.
+        # Not downgraded to Inconclusive: everything else — YARA, static analysis,
+        # the format analysers — still ran, and calling that Inconclusive would
+        # make the verdict meaningless rather than cautious. But the reader has to
+        # be told which half of the picture is missing, because silence here reads
+        # as "we checked and found nothing".
+        all_reasons.append(
+            "⚠ No reputation data — this deployment has no VirusTotal key configured, "
+            "so no antivirus consensus was consulted. This verdict comes from local "
+            "analysis alone: it can confirm what was found, but cannot tell you the "
+            "file is known-good."
+        )
 
     # Same honesty rule, different cause: content that could not be examined at
     # all. A password-protected archive yields no members, so every per-file
@@ -1430,12 +1443,16 @@ def calculate_score(analysis_data: dict) -> dict:
     # saw the files. Unlike the intel case, re-scanning will not help — the
     # password is needed — so the wording asks for that instead.
     #
-    # Ordered after the intel branch and gated on Clear for the same reason it
-    # is: a real detection must never be relabelled Inconclusive and buried.
+    # Ordered after the intel branch, and allowed to refine an Inconclusive the
+    # intel branch already set: these causes are more specific and more useful.
+    # "The archive is password-protected" tells the reader what to do; "VirusTotal
+    # was unavailable" does not, and it was overwriting the better answer whenever
+    # both were true. Still gated away from Suspicious/Malicious, because a real
+    # detection must never be relabelled Inconclusive and buried.
     unexaminable = analysis_data.get("unexaminable") or []
     unsupported_container = analysis_data.get("unsupported_container")
 
-    if unexaminable and verdict == "Clear":
+    if unexaminable and verdict in ("Clear", "Inconclusive"):
         verdict = "Inconclusive"
         listed = ", ".join(unexaminable[:3]) + (" …" if len(unexaminable) > 3 else "")
         inconclusive_reason = (
@@ -1451,7 +1468,7 @@ def calculate_score(analysis_data: dict) -> dict:
             f"known way of moving a sample past scanners — re-submit the contents "
             f"unpacked to get a real verdict."
         )
-    elif analysis_data.get("unreadable_members") and verdict == "Clear":
+    elif analysis_data.get("unreadable_members") and verdict in ("Clear", "Inconclusive"):
         # A member that extracted and then could not be read is almost always
         # antivirus taking it in between — which is evidence about that member,
         # not a tooling glitch. The same reasoning already applies to the
@@ -1472,7 +1489,26 @@ def calculate_score(analysis_data: dict) -> dict:
             f"extraction and were never analysed: {listed}. This commonly means antivirus "
             f"removed them, which is a signal in its own right rather than an absence of one."
         )
-    elif analysis_data.get("artifact_unreadable") and verdict == "Clear":
+    elif analysis_data.get("archive_truncated") and verdict in ("Clear", "Inconclusive"):
+        # Unpacking stopped at the bomb guard, so every member past the cutoff
+        # was never extracted, hashed, YARA-scanned or looked up. Central
+        # directory order is chosen by whoever built the archive, so padding the
+        # front with benign entries and putting the payload after the cap is a
+        # deliberate, cheap way to buy a Clear verdict.
+        verdict = "Inconclusive"
+        limit_reason = analysis_data["archive_truncated"]
+        inconclusive_reason = (
+            f"Only part of this archive was unpacked ({limit_reason}). Everything past "
+            f"that point was never extracted or scanned, so this is a verdict on the "
+            f"portion we saw, not on the archive. Re-submit the remaining contents "
+            f"separately to get a real answer."
+        )
+        all_reasons.append(
+            f"⚠ INCONCLUSIVE — unpacking stopped early ({limit_reason}) and the "
+            f"remaining members were never analysed. An archive padded past that limit "
+            f"is a known way to hide a payload behind the cutoff."
+        )
+    elif analysis_data.get("artifact_unreadable") and verdict in ("Clear", "Inconclusive"):
         # Nothing at all was analysed, so this is the strongest possible case
         # for refusing to say Clear. The usual cause — antivirus on the scanning
         # host confiscating the sample — is itself evidence about the file, so
@@ -1490,7 +1526,7 @@ def calculate_score(analysis_data: dict) -> dict:
             f"antivirus on the scanning server removed it, which is a signal in its own right. "
             f"Treat this file as untrusted until it can be examined."
         )
-    elif unsupported_container and verdict == "Clear":
+    elif unsupported_container and verdict in ("Clear", "Inconclusive"):
         # Distinct wording on purpose. Telling someone their 7-Zip archive is
         # password-protected would be a confident, specific, wrong explanation —
         # the same failure as the hard-coded VirusTotal sentence this replaced.
@@ -1512,7 +1548,14 @@ def calculate_score(analysis_data: dict) -> dict:
         "verdict":     verdict,
         "family":      family or "Unknown",
         "attribution": attribution or "Unattributed",
+        # `partial` means "we tried and did not get an answer", and callers act on
+        # exactly that: the debounce refuses to reuse a partial result because a
+        # retry might succeed. Folding "no key configured" in here broke that —
+        # a retry can never succeed, so every scan re-ran the full pipeline.
         "partial":     intel_partial,
+        # Reported separately for the same reason: same missing information,
+        # different remedy. Nothing to retry; the deployment needs a key.
+        "reputation_unavailable": bool(analysis_data.get("intel_unconfigured")),
         "inconclusive_reason": inconclusive_reason,
         "reasons":     all_reasons,
         "indicators": {

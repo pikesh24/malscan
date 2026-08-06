@@ -1489,10 +1489,25 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         # engines agreed was clean scored 73/100 because one junk string pulled
         # out of it did not resolve.
         _verdict_critical = ("vt_url",) if submitted_url else ("vt_file",)
+        # VT was configured and we still got no verdict out of it: rate limited,
+        # errored, still queued. We tried and failed, so the scan is partial and a
+        # would-be Clear becomes Inconclusive.
         intel_partial = any(
             key in futures and _intel_incomplete(osint_results.get(key))
             for key in _verdict_critical
         )
+        # Distinct case: no VT_API_KEY at all, so the lookup was never attempted.
+        # This used to be invisible — `key in futures` above made an unconfigured
+        # deployment the one kind of missing intel that did NOT mark a scan
+        # partial, so it answered Clear to everything.
+        #
+        # It is deliberately NOT treated as `intel_partial`. Such a deployment
+        # still runs YARA, static analysis and every format analyser, and calling
+        # all of that Inconclusive would teach users to ignore the verdict
+        # entirely — a worse outcome than a verdict clearly labelled as reached
+        # without reputation data. It is disclosed instead, via the same `partial`
+        # banner that already exists for incomplete intel.
+        intel_unconfigured = any(key not in futures for key in _verdict_critical)
 
         # ── 3. Build analysis_data for scoring ───────────────────────────────
         analysis_data = {
@@ -1502,6 +1517,7 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "archive_hashes": archive_scan["hash_candidates"],
             "submitted_url": submitted_url,
             "intel_partial": intel_partial,
+            "intel_unconfigured": intel_unconfigured,
             # Members that exist but could not be examined. Scoring turns a
             # would-be "Clear" into "Inconclusive" on the strength of this: a
             # scan that never saw the files cannot vouch for them.
@@ -1513,6 +1529,11 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             # antivirus quarantining them between extraction and analysis, which
             # is evidence about the member rather than a tooling glitch.
             "unreadable_members": archive_scan.get("unreadable") or [],
+            # We stopped unpacking at the file-count or decompressed-size cap, so
+            # everything past that point was never examined. This used to be
+            # attached to the scorer's OUTPUT further down, long after the
+            # verdict existed, so a padded archive came back Clear.
+            "archive_truncated": archive_scan.get("truncated"),
             # The artifact itself could not be read, so nothing was analysed.
             "artifact_unreadable": artifact_unreadable,
             "static": {
