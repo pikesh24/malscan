@@ -1,11 +1,16 @@
 name: Build APK & OTA update
 
+# Manual only. This used to run on every push touching frontend/**, which was
+# harmless while the Gradle step failed — nothing was ever published. On
+# 2026-08-06 that step started passing, and the very next push cut a public
+# GitHub Release (v7) carrying a debug-signed APK. That is not something a push
+# of backend or web code should do on its own.
+#
+# The Android build is produced from a separate pipeline that pulls this repo,
+# so nothing here needs to publish one. Run this by hand from the Actions tab
+# if you ever want a build straight out of this repo.
 on:
-  push:
-    branches: [main, pika]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/build-apk.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
