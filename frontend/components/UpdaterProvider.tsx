@@ -19,6 +19,35 @@ interface VersionManifest {
   apkUrl: string
 }
 
+// The manifest decides what code this app downloads and runs, and it lives in a
+// Gist whose write token sits in CI secrets. Anyone who obtains that token could
+// point every installed copy at a bundle of their choosing — and neither URL was
+// checked before use: not the scheme, not the host, not a signature.
+//
+// An allowlist is not a substitute for signing the bundle (tracked separately),
+// but it removes the one-step version of that attack. These are the hosts CI
+// actually publishes to: build-apk.yml attaches update.zip and app-debug.apk to
+// a GitHub Release, and release asset downloads redirect via objects.*.
+const ALLOWED_UPDATE_HOSTS = [
+  "github.com",
+  "objects.githubusercontent.com",
+  "raw.githubusercontent.com",
+]
+
+function isTrustedUpdateUrl(raw: string | undefined): boolean {
+  if (!raw) return false
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return false
+  }
+  // https only: an OTA bundle fetched over http can be swapped in transit, and
+  // the app permits cleartext for LAN development.
+  if (url.protocol !== "https:") return false
+  return ALLOWED_UPDATE_HOSTS.includes(url.hostname)
+}
+
 type OtaState =
   | { phase: "available"; versionName: string; otaUrl: string }
   | { phase: "downloading"; versionName: string; percent: number }
@@ -51,6 +80,13 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!VERSION_MANIFEST_URL) return
+      // The manifest is baked in at build time, so this is a misconfiguration
+      // guard rather than an attack surface — but a plaintext manifest would
+      // hand an on-path attacker the update pointer directly.
+      if (!VERSION_MANIFEST_URL.startsWith("https://")) {
+        console.error("[MalScan] Update manifest URL must be https — skipping update check.")
+        return
+      }
 
       try {
         const [{ build: currentVersionCode }, { bundle: currentBundle }, gistResponse] = await Promise.all([
@@ -61,12 +97,20 @@ export function UpdaterProvider({ children }: { children: React.ReactNode }) {
         const manifest: VersionManifest = JSON.parse(gistResponse.files["version.json"].content)
 
         if (Number(manifest.versionCode) > Number(currentVersionCode)) {
+          if (!isTrustedUpdateUrl(manifest.apkUrl)) {
+            console.error("[MalScan] Refusing APK update from untrusted URL:", manifest.apkUrl)
+            return
+          }
           setNativeUpdate({ versionName: manifest.versionName, apkUrl: manifest.apkUrl })
           return
         }
 
         if (manifest.versionName === currentBundle.version) return
 
+        if (!isTrustedUpdateUrl(manifest.otaUrl)) {
+          console.error("[MalScan] Refusing OTA bundle from untrusted URL:", manifest.otaUrl)
+          return
+        }
         setOtaState({ phase: "available", versionName: manifest.versionName, otaUrl: manifest.otaUrl })
       } catch (e) {
         console.error("[MalScan] Update check failed:", e)

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release policy: HTTPS only.
+
+  The app previously set android:usesCleartextTraffic="true" application-wide,
+  which let the shipped build talk plain HTTP to any host on the internet. That
+  existed for one reason — during local testing the backend runs at
+  http://<LAN IP>:8001 — and it was paid for everywhere else, including the OTA
+  update channel and the hosted API.
+
+  LAN testing keeps working: src/debug/res/xml/network_security_config.xml
+  overrides this file for debug builds only, which is what `assembleDebug`
+  produces. A release build gets this one and refuses cleartext outright.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

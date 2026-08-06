@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only. Gradle replaces the main/ file of the same name for the
+  debug variant, so nothing here reaches a release build.
+
+  Cleartext is permitted because the development backend is served over plain
+  HTTP on the local network (http://<LAN IP>:8001, and 10.0.2.2 is the host
+  machine as seen from the Android emulator). The LAN address changes between
+  networks, which is why this is a blanket allow for the debug variant rather
+  than a domain list — the scoping that matters is debug-versus-release.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
