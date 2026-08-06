@@ -106,13 +106,59 @@ app.add_middleware(
 # Overridable so tests (and future cloud deploys) can isolate their artifacts.
 VAULT_DIR = os.environ.get("MALSCAN_VAULT_DIR", "app/vault")
 os.makedirs(VAULT_DIR, exist_ok=True)
-cleanup_vault(VAULT_DIR, days_old=30)
+VAULT_RETENTION_DAYS = int(os.environ.get("MALSCAN_VAULT_RETENTION_DAYS", "30"))
+# Hard ceiling on stored artifacts. Retention alone bounds nothing over a short
+# window: at the submission limit a single client can write gigabytes in minutes,
+# and none of it is eligible for age-based deletion for weeks.
+VAULT_MAX_BYTES = int(os.environ.get("MALSCAN_VAULT_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+cleanup_vault(VAULT_DIR, days_old=VAULT_RETENTION_DAYS)
+# This used to be the only call, at import. A process that stays up for ninety
+# days accumulated ninety days of artifacts, because nothing ran it again.
+_last_vault_sweep = time.monotonic()
+VAULT_SWEEP_INTERVAL_S = 3600
+
+
+def _vault_bytes() -> int:
+    total = 0
+    with os.scandir(VAULT_DIR) as entries:
+        for entry in entries:
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def _maintain_vault() -> None:
+    """Sweep on a timer, and refuse new writes once the vault is over budget."""
+    global _last_vault_sweep
+    now = time.monotonic()
+    if now - _last_vault_sweep >= VAULT_SWEEP_INTERVAL_S:
+        _last_vault_sweep = now
+        try:
+            cleanup_vault(VAULT_DIR, days_old=VAULT_RETENTION_DAYS)
+        except Exception as exc:
+            print(f"Vault sweep failed: {exc}")
+    if _vault_bytes() > VAULT_MAX_BYTES:
+        raise HTTPException(
+            status_code=507,
+            detail="The scanner is out of storage for new submissions. Try again later.",
+        )
 
 # ── Rate limiting (in-memory, per client IP) ──────────────────────────────────
 _submission_log: dict = defaultdict(deque)
+# Only swept once the table is larger than a plausible number of real clients,
+# so the common case stays a dict insert and nothing more.
+_SUBMISSION_LOG_MAX_IPS = 10_000
 
 def _enforce_rate_limit(request: Request) -> None:
-    """Sliding-window limiter for submission endpoints. Raises 429 when exceeded."""
+    """Sliding-window limiter for submission endpoints. Raises 429 when exceeded.
+
+    In-process and per-worker: N workers means N times the stated limit, and a
+    restart forgets everything. A shared store (Redis) is the real answer and is
+    not free, so this is a speed bump rather than a control — see docs.
+    """
     client_ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     log = _submission_log[client_ip]
@@ -124,6 +170,13 @@ def _enforce_rate_limit(request: Request) -> None:
             detail=f"Too many submissions — limit is {RATE_LIMIT_MAX} per minute. Please wait and try again.",
         )
     log.append(now)
+    # Every distinct source IP allocated a deque that was never reclaimed, so the
+    # limiter's own bookkeeping grew without bound — a slow leak on a public
+    # endpoint, and reachable by anyone able to vary a source address. Drop the
+    # entries that have aged out entirely.
+    if len(_submission_log) > _SUBMISSION_LOG_MAX_IPS:
+        for ip in [ip for ip, entries in _submission_log.items() if not entries]:
+            del _submission_log[ip]
 
 # ── Indicator policy ──────────────────────────────────────────────────────────
 # These were one list, and merging them caused a false negative: a document whose
@@ -1657,6 +1710,7 @@ async def upload_file(
     allow_vt_upload: bool = Form(True),
 ):
     _enforce_rate_limit(request)
+    _maintain_vault()
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES // 1024 // 1024} MB.")
@@ -1694,6 +1748,7 @@ _DOMAIN_RE = re.compile(
 async def submit_url(request: Request, background_tasks: BackgroundTasks, body: UrlSubmission):
     """Accepts a raw URL string, saves it as a vault artifact, and runs the full analysis pipeline."""
     _enforce_rate_limit(request)
+    _maintain_vault()
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL cannot be empty")
