@@ -43,8 +43,13 @@ def test_the_sweep_runs_again_after_the_interval(client, monkeypatch):
     calls = []
     monkeypatch.setattr(app_main, "cleanup_vault", lambda d, days_old: calls.append(days_old))
     monkeypatch.setattr(app_main, "_vault_bytes", lambda: 0)
-    # Pretend the last sweep was long ago.
-    monkeypatch.setattr(app_main, "_last_vault_sweep", 0.0)
+    # "Long ago" has to be relative to the clock actually in use. This was 0.0,
+    # which reads as long ago on a workstation that has been up for days and as
+    # *just now* on a CI runner booted seconds earlier — time.monotonic() counts
+    # from boot, so 0.0 is only distant if the machine has been running a while.
+    # The suite passed on Windows and failed on Linux for exactly that reason.
+    monkeypatch.setattr(app_main, "_last_vault_sweep",
+                        app_main.time.monotonic() - app_main.VAULT_SWEEP_INTERVAL_S - 1)
 
     client.post("/upload", files={"file": ("z.txt", io.BytesIO(b"data"), "text/plain")})
 
