@@ -1423,6 +1423,17 @@ def calculate_score(analysis_data: dict) -> dict:
                 "source such as VirusTotal did not return in time). This result is "
                 "provisional and may change — re-scan to refresh it."
             )
+    elif analysis_data.get("vt_upload_declined"):
+        # The submitter asked for a hash lookup only and VirusTotal had never
+        # seen this file, so there is no reputation verdict — by their choice,
+        # which is a legitimate one for a private document. Still stated plainly:
+        # they traded a verdict for privacy and deserve to see the cost.
+        all_reasons.append(
+            "⚠ No reputation data — this file is unknown to VirusTotal, and it was not "
+            "uploaded because the scan requested a hash lookup only. Local analysis found "
+            "what is reported here; nothing confirms the file is known-good. Re-scan with "
+            "uploading enabled if you want a reputation verdict."
+        )
     elif analysis_data.get("intel_unconfigured"):
         # No VirusTotal key on this deployment, so reputation was never consulted.
         # Not downgraded to Inconclusive: everything else — YARA, static analysis,

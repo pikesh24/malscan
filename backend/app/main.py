@@ -30,7 +30,7 @@ MAX_URL_LENGTH        = 2048                 # /submit-url input cap
 RATE_LIMIT_MAX        = 30                   # submissions per window per client IP
 RATE_LIMIT_WINDOW_S   = 60
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, Response
@@ -996,7 +996,8 @@ finally:
     _bf_db.close()
 
 
-def process_scan_job(job_id: str, file_path: str, original_filename: str = "unknown", submitted_url: str = None):
+def process_scan_job(job_id: str, file_path: str, original_filename: str = "unknown", submitted_url: str = None,
+                     allow_vt_upload: bool = True):
     db = SessionLocal()
     job = db.query(ScanJob).filter(ScanJob.job_id == job_id).first()
     if not job:
@@ -1281,8 +1282,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         if scan_target_url and us_key:
             futures["urlscan"] = loop.run_in_executor(_osint_executor, urlscan_scan, scan_target_url, us_key)
         if not submitted_url and vt_key:
+            # allow_vt_upload=False keeps this to a hash lookup. An unknown hash
+            # then stays unknown rather than being resolved by publishing the
+            # file to a third party.
             futures["vt_file"] = loop.run_in_executor(
-                _osint_executor, get_file_report, job.file_hash, vt_key, file_path
+                _osint_executor, get_file_report, job.file_hash, vt_key, file_path,
+                allow_vt_upload,
             )
 
         # ── New: abuse.ch threat intelligence (no key required) ──────────────
@@ -1518,6 +1523,12 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             "submitted_url": submitted_url,
             "intel_partial": intel_partial,
             "intel_unconfigured": intel_unconfigured,
+            # The submitter chose hash-lookup-only and the hash was unknown, so
+            # no reputation verdict exists. Their call, but it shapes the report.
+            "vt_upload_declined": bool(
+                (osint_results.get("vt_file") or {}).get("upload_declined")
+                if isinstance(osint_results.get("vt_file"), dict) else False
+            ),
             # Members that exist but could not be examined. Scoring turns a
             # would-be "Clear" into "Inconclusive" on the strength of this: a
             # scan that never saw the files cannot vouch for them.
@@ -1633,7 +1644,18 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
 # ── Upload ────────────────────────────────────────────────────────────────────
 
 @app.post("/upload")
-async def upload_file(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_file(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    # Opt out of publishing an unknown file to VirusTotal. Uploading is how an
+    # unrecognised sample gets a reputation verdict at all, so it stays on by
+    # default — but anything uploaded enters VT's corpus and is downloadable by
+    # its paying subscribers, which is not a trade the submitter of a private
+    # document should make unknowingly. Declining costs the VT verdict, and the
+    # scan says so rather than quietly returning less.
+    allow_vt_upload: bool = Form(True),
+):
     _enforce_rate_limit(request)
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
@@ -1652,7 +1674,8 @@ async def upload_file(request: Request, background_tasks: BackgroundTasks, file:
     db.close()
 
     safe_name = sanitize_filename(file.filename) if file.filename else "unknown"
-    background_tasks.add_task(process_scan_job, job_id, file_path, safe_name)
+    background_tasks.add_task(process_scan_job, job_id, file_path, safe_name,
+                              allow_vt_upload=allow_vt_upload)
 
     return {"job_id": job_id, "status": "Submitted"}
 

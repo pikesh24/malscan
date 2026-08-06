@@ -272,7 +272,8 @@ def upload_file(file_path: str, api_key: str) -> dict:
         return {"error": str(e), "vt_status": "error"}
 
 
-def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict:
+def get_file_report(file_hash: str, api_key: str, file_path: str = None,
+                    allow_upload: bool = True) -> dict:
     """
     Queries VirusTotal for a file report by SHA-256 hash FIRST — an instant,
     authoritative answer for any file VT already knows (which is most real
@@ -318,7 +319,20 @@ def get_file_report(file_hash: str, api_key: str, file_path: str = None) -> dict
                 "vt_status": "found",
             }
         elif response.status_code == 404:
-            # Hash not found — upload the file if we have it
+            # Hash not found. Uploading is how an unknown file gets a verdict at
+            # all, but it also publishes the artifact: anything sent here enters
+            # VirusTotal's corpus, where paid subscribers can download it. That
+            # is the right trade for a suspicious attachment and the wrong one
+            # for a private document, so the submitter decides.
+            if not allow_upload:
+                logger.info(f"Hash {file_hash[:16]}... unknown; upload declined by submitter.")
+                return {
+                    "status": "unknown",
+                    "message": ("File not found in VirusTotal, and it was not uploaded "
+                                "because this scan requested hash lookup only."),
+                    "vt_status": "not_found",
+                    "upload_declined": True,
+                }
             if file_path and os.path.exists(file_path):
                 logger.info(f"Hash {file_hash[:16]}... unknown, uploading file to VT.")
                 return upload_file(file_path, api_key)

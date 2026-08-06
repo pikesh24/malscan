@@ -1,0 +1,83 @@
+# Quality gates for both halves of the repo.
+#
+# Until this existed the only workflow was build-apk.yml, which ships a debug
+# APK and checks nothing. It is also scoped to `paths: frontend/**`, so a
+# backend-only commit ran no CI at all — while backend/tests holds the
+# SSRF, XSS, archive-bomb and rate-limit suites. 500+ passing tests were
+# invisible to anyone reading the repo.
+#
+# Deliberately not gated on `paths`: a change to scoring is exactly the kind
+# that needs the frontend contract re-checked, and vice versa.
+name: CI
+
+on:
+  push:
+    branches: [main, pika]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Kept in step with .python-version and render.yaml. 3.14 has no
+          # manylinux wheel for psycopg2-binary or yara-python, and pip installs
+          # neither while still reporting success — YARA then silently matches
+          # nothing, which looks like a clean scan rather than a broken one.
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt \
+                      -r analysis_engine/requirements.txt \
+                      -r attribution_module/requirements.txt
+
+      - name: Run tests
+        env:
+          # Console encoding: reasons contain "⚠", and cp1252 raises on it.
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest tests -q
+
+  frontend:
+    name: Frontend lint, types and audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` installs exactly the lockfile, so CI cannot drift from what
+      # developers and the APK build resolve.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Advisory only for now: `next` currently carries a request-smuggling
+      # advisory whose fix is a minor-version bump flagged as outside the stated
+      # dependency range. Upgrading is tracked separately — failing the build on
+      # it today would block every unrelated change. Remove continue-on-error
+      # once that upgrade lands.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+        continue-on-error: true
