@@ -568,6 +568,31 @@ Report — "could not check" must never render as "nothing is wrong":
 - [ ] `/analysis` stage list matches the real pipeline in `main.py` — no sandbox,
       no artifact volume, no passive DNS
 
+Trust boundary — from the external audit, all verified reproducible first:
+
+- [ ] `/report?id=<any-nonexistent-id>` → **not** Clear, no OPEN button. A 404
+      used to leave `reportData` unset and the default filled in "Clear"
+- [ ] `/report?id=<a-job-still-running>` → no verdict shown until it finishes
+- [ ] Scan a benign URL, then edit `&target=` in the address bar → **LINK
+      BLOCKED**, and Target Analyzed still shows the URL that was scanned
+- [ ] Same job, `&target=javascript:alert(1)` → blocked, never opened
+- [ ] Same job with the *matching* target → OPEN LINK still works (guard against
+      over-blocking, which would look identical to "fixed")
+- [ ] `&fileUri=` pointing at a file that is not the scanned one → FILE BLOCKED
+- [ ] Stop the backend, then upload → a real error naming the cause; **never** a
+      report. Previously routed to a demo job id and rendered "No Threat Detected"
+- [ ] Upload >50 MB → "larger than the 50 MB limit", not "backend offline"
+- [ ] ZIP padded past 500 members → Inconclusive, and the reason names the limit
+- [ ] Unset `VT_API_KEY`, scan a clean file → still concludes, but the report says
+      no reputation data was consulted
+- [ ] Password-protected archive scanned while VirusTotal is throttled → the
+      reason says *password*, not *VirusTotal unavailable* (specific beats generic)
+- [ ] Upload with `allow_vt_upload=false` and an unknown hash → file is **not**
+      sent to VirusTotal, and the report says reputation was skipped
+- [ ] Fill the vault past `MALSCAN_VAULT_MAX_BYTES` → 507 naming storage, not a
+      disk-full crash
+- [ ] Point the OTA manifest at a non-GitHub or `http://` URL → update refused
+
 ---
 
 ## 21. Limits and performance
