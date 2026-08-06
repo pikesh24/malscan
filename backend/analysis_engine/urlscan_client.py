@@ -61,7 +61,15 @@ def _parse_result(data: dict, scan_uuid: str) -> dict:
     lists = data.get("lists", {})
     return {
         "screenshot_url": f"https://urlscan.io/screenshots/{scan_uuid}.png",
+        # What was submitted. Named page_url for historical reasons; it is the
+        # TASK url, not the page the browser ended up on.
         "page_url": data.get("task", {}).get("url"),
+        # Where the browser actually landed. URLScan drives a real browser, so
+        # this is the far end of any redirect chain — and it costs nothing to
+        # read, because the request was already made by them, not by us. That
+        # distinction is what makes using it safe: Malscan never follows the
+        # link itself, so no new SSRF surface is opened.
+        "final_url": page.get("url") or data.get("task", {}).get("url"),
         "page_title": page.get("title", ""),
         "page_ip": page.get("ip", ""),
         "page_country": page.get("country", ""),

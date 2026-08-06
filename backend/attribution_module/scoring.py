@@ -477,6 +477,31 @@ def _check_virustotal(osint):
     return score, reasons
 
 
+def _check_redirect(analysis_data: dict):
+    """Reports where a link actually leads. Deliberately scores nothing.
+
+    Redirects are ordinary: shorteners in newsletters, click trackers, consent
+    gateways and `google.com/url?q=` are everywhere, so "this link redirects"
+    fires on a large share of perfectly legitimate mail and carries almost no
+    information on its own — the same base-rate argument that keeps obfuscation
+    from scoring in _check_script.
+
+    What matters is that the DESTINATION gets judged, which is handled upstream:
+    the far-end host is forced to the front of the VirusTotal queue instead of
+    competing with CDNs for a budgeted lookup, and reaches ThreatFox and URLhaus
+    already. Points, if any, come from that evidence. This exists so the reader
+    is told the link does not go where it says.
+    """
+    target = analysis_data.get("redirect_target")
+    if not target:
+        return 0, []
+    return 0, [
+        f"This link does not lead where it points — it redirects to {target}. "
+        f"The destination was checked in its own right; the reputation and "
+        f"infrastructure findings below describe where you would actually land."
+    ]
+
+
 def _check_urlscan(osint):
     """Score boost based on URLScan.io verdict."""
     score, reasons = 0, []
@@ -1272,6 +1297,8 @@ def calculate_score(analysis_data: dict) -> dict:
     vt_score, r = _check_virustotal(osint);        intel_total += vt_score; artifact_total += vt_score; all_reasons += r
     record("VirusTotal Consensus", vt_score)
     s, r      = _check_urlscan(osint);             heuristic_total += s; all_reasons += r
+    # Reports the destination; scores nothing (see the docstring for why).
+    s, r      = _check_redirect(analysis_data);    heuristic_total += s; all_reasons += r
     if submitted_url:
         artifact_total += s
     record("URLScan Verdict", s)

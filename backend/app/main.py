@@ -54,7 +54,7 @@ try:
     )
     from analysis_engine.osint_enricher import get_whois, get_dns_records, get_geoip
     from analysis_engine.url_processor import analyze_url
-    from analysis_engine.public_suffix import public_suffix
+    from analysis_engine.public_suffix import public_suffix, same_registrable_domain
     from analysis_engine.vt_client import get_url_report, get_file_report
     from analysis_engine.urlscan_client import scan_url as urlscan_scan
     from analysis_engine.resource_chain import (
@@ -1474,11 +1474,34 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         if osint_data.get("urlscan"):
             resource_chain = analyze_resource_chain(osint_data["urlscan"], scan_target_url or "")
 
-        if resource_chain.get("hosts"):
-            rc_futures, rc_hosts = {}, resource_chain["hosts"]
+        # Where the link actually goes. A submitted URL that redirects elsewhere
+        # is judged almost entirely on the wrong host otherwise: WHOIS, GeoIP and
+        # domain age all describe the submitted domain, so an open redirector on
+        # a 25-year-old reputable domain contributes nothing but reassurance
+        # while the payload sits at the far end.
+        #
+        # The destination already reaches ThreatFox and URLhaus, which have no
+        # per-scan ceiling. VirusTotal does, and there the destination was just
+        # another third-party host competing with CDNs under heuristics built to
+        # tell a font host from a payload. It is not a third party — it is the
+        # thing the user is actually about to visit — so it goes first.
+        redirect_target = None
+        if osint_data.get("urlscan") and scan_target_url:
+            final_url = (osint_data["urlscan"] or {}).get("final_url")
+            if final_url and not same_registrable_domain(
+                _url_host(final_url) or "", _url_host(scan_target_url) or ""
+            ):
+                redirect_target = final_url
+
+        if resource_chain.get("hosts") or redirect_target:
+            rc_futures, rc_hosts = {}, resource_chain.get("hosts") or []
             vt_targets = (
                 select_resource_lookups(resource_chain, RESOURCE_VT_BUDGET) if vt_key else []
             )
+            if redirect_target and vt_key:
+                dest_host = _url_host(redirect_target)
+                if dest_host:
+                    vt_targets = [dest_host] + [h for h in vt_targets if h != dest_host]
             for host in vt_targets:
                 rc_futures[("vt", host)] = _osint_executor.submit(
                     get_url_report, f"https://{host}/", vt_key
@@ -1579,6 +1602,9 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
             # known sample that merely arrived wrapped in an archive.
             "archive_hashes": archive_scan["hash_candidates"],
             "submitted_url": submitted_url,
+            # Set only when the destination is a different registrable domain
+            # from the link that was submitted.
+            "redirect_target": redirect_target,
             "intel_partial": intel_partial,
             "intel_unconfigured": intel_unconfigured,
             # The submitter chose hash-lookup-only and the hash was unknown, so
@@ -1651,6 +1677,11 @@ def process_scan_job(job_id: str, file_path: str, original_filename: str = "unkn
         score_data["scan_duration_seconds"] = round(time.time() - scan_started_at, 2)
         if submitted_url:
             score_data["submitted_url"] = submitted_url
+        # Only set when the link leads somewhere other than where it points. The
+        # report has to be able to say "you were shown X, you would arrive at Y"
+        # — a redirect that stays invisible is the whole trick.
+        if redirect_target:
+            score_data["redirect_target"] = redirect_target
         score_data["imphash"]   = pe_info.get("imphash")
         score_data["is_pe"]     = pe_info.get("is_pe", False)
         score_data["pe_sections"] = pe_info.get("pe_sections", [])
