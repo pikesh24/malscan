@@ -30,6 +30,7 @@ export default function LandingPage() {
   const [urlInput, setUrlInput] = useState("")
   const [isSubmittingUrl, setIsSubmittingUrl] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -40,14 +41,26 @@ export default function LandingPage() {
     if (!file) return;
 
     setIsUploading(true)
+    setUploadError(null)
     try {
       const jobId = await submitFileForScan(file, file.name)
       router.push(`/analysis?id=${jobId}`)
     } catch (err) {
+      // This used to navigate to a demo job id, which raced to 100% and landed
+      // on a report that 404s — rendering "No Threat Detected." for a file that
+      // was never uploaded. The upload fails for ordinary reasons (backend cold
+      // start, >50MB, rate limit), so that path was reachable in normal use.
+      // Say what went wrong instead; never imply a scan happened.
       console.error(err)
-      router.push(`/analysis?id=job-demo-8x9921`)
+      setUploadError(
+        err instanceof Error && err.message
+          ? `Could not scan this file: ${err.message}. Nothing was analysed.`
+          : "Could not reach the scanner. Nothing was analysed — please try again."
+      )
     }
     setIsUploading(false)
+    // Let the same file be retried; without this a repeat pick fires no change.
+    e.target.value = ""
   }
 
   const handleUrlSubmit = async () => {
@@ -115,6 +128,11 @@ export default function LandingPage() {
           </div>
           <div className="absolute top-0 h-full w-1 bg-[#FF3B00] opacity-50 group-hover:animate-scan"></div>
         </motion.div>
+        {uploadError && (
+          <p className="w-full max-w-xl font-mono text-[10px] text-[#FF3B00] tracking-wider leading-relaxed">
+            {uploadError}
+          </p>
+        )}
 
         {/* OR DIVIDER */}
         <div className="flex items-center w-full max-w-xl gap-4 my-2">

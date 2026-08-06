@@ -16,7 +16,10 @@ const BackgroundMedia = () => (
 function AnalysisContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const id = searchParams.get("id") || "job-demo-8x9921"
+  // No synthetic default. This used to fall back to a demo job id which raced
+  // the progress bar to 100% and redirected to a report that does not exist —
+  // and a missing report rendered as "No Threat Detected."
+  const id = searchParams.get("id") || ""
   // Present only when this scan came from the default-browser link interceptor.
   const target = searchParams.get("target")
   // Present only when this scan came from a native file intent (share sheet
@@ -53,8 +56,12 @@ function AnalysisContent() {
       })
     }, 50)
 
-    if (id.includes('demo')) {
-       targetProgress = 100;
+    // Without a job id there is nothing to poll and nothing to report. The
+    // previous branch here drove the bar to 100% for any id containing "demo",
+    // which then redirected to a non-existent report.
+    if (!id) {
+       clearInterval(visualInterval)
+       setRealStatus("NO JOB")
        return () => clearInterval(visualInterval)
     }
 
