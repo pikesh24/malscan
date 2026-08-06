@@ -20,7 +20,14 @@ os.environ["MALSCAN_DB_URL"] = "sqlite:///" + os.path.join(_tmp, "test.db").repl
 os.environ["MALSCAN_VAULT_DIR"] = os.path.join(_tmp, "vault")
 # Force external enrichers off even if backend/.env defines keys
 # (load_dotenv does not override pre-set vars).
-os.environ["VT_API_KEY"] = ""
+#
+# VT_API_KEY is the exception: it is set to a dummy value and the client is
+# stubbed in `offline_pipeline` below. An empty key means "no reputation source
+# was consulted", which is now a legitimately Inconclusive scan — so leaving it
+# empty made the whole suite model a misconfigured deployment rather than a
+# working one, and every "an ordinary file still concludes" test was really
+# asserting the degraded path.
+os.environ["VT_API_KEY"] = "test-key"
 os.environ["URLSCAN_API_KEY"] = ""
 os.environ["ABUSEIPDB_API_KEY"] = ""
 
@@ -41,6 +48,20 @@ def offline_pipeline(monkeypatch):
     monkeypatch.setattr(app_main, "get_whois", lambda d: {})
     monkeypatch.setattr(app_main, "get_dns_records", lambda d: {"A": [], "MX": [], "TXT": []})
     monkeypatch.setattr(app_main, "get_geoip", lambda ip: {})
+    # A VirusTotal that answers, finds nothing, and changes no score. Kept under
+    # 40 engines deliberately: at or above that a clean result triggers the
+    # benign-consensus dampener, which would halve every heuristic in the suite
+    # and quietly rewrite the numbers other tests assert on.
+    _vt_clean = {
+        "stats": {"malicious": 0, "suspicious": 0, "harmless": 5, "undetected": 3},
+        "detections": [],
+        "reputation": 0,
+        "times_submitted": 5000,
+        "vt_status": "found",
+    }
+    monkeypatch.setattr(app_main, "get_file_report",
+                        lambda h, k, p=None, allow_upload=True: dict(_vt_clean))
+    monkeypatch.setattr(app_main, "get_url_report", lambda u, k: dict(_vt_clean))
     monkeypatch.setattr(app_main, "mb_check_hash", lambda h: {"found": False})
     monkeypatch.setattr(app_main, "tf_check_iocs", lambda *a, **k: {"found": False})
     monkeypatch.setattr(app_main, "uh_check_urls", lambda u: {"found": False})

@@ -1404,18 +1404,43 @@ def calculate_score(analysis_data: dict) -> dict:
     inconclusive_reason = None
 
     if intel_partial:
+        # Two ways to have no reputation verdict, and they need different things
+        # from the reader: one is worth retrying, the other is a deployment that
+        # needs configuring. An Inconclusive that does not say which becomes
+        # noise, and noise is what teaches people to ignore the verdict.
+        unconfigured = bool(analysis_data.get("intel_unconfigured"))
         if verdict == "Clear":
             verdict = "Inconclusive"
-            inconclusive_reason = (
-                "This scan did not complete — VirusTotal, the verdict-critical source, "
-                "was unavailable. No indicators were found, but that is not the same as "
-                "safe. Re-scan before trusting this artifact."
-            )
+            if unconfigured:
+                inconclusive_reason = (
+                    "This scan could not be completed — no VirusTotal key is configured on "
+                    "this deployment, so the verdict-critical reputation source was never "
+                    "consulted. Local analysis found no indicators, which is not the same "
+                    "as safe. Configure a key, or treat this artifact as unverified."
+                )
+                all_reasons.append(
+                    "⚠ INCONCLUSIVE — not a clean bill of health. Local analysis (YARA, "
+                    "static and format checks) found nothing, but no antivirus consensus "
+                    "was consulted at all: this deployment has no VirusTotal key. Nothing "
+                    "here confirms the artifact is known-good."
+                )
+            else:
+                inconclusive_reason = (
+                    "This scan did not complete — VirusTotal, the verdict-critical source, "
+                    "was unavailable. No indicators were found, but that is not the same as "
+                    "safe. Re-scan before trusting this artifact."
+                )
+                all_reasons.append(
+                    "⚠ INCONCLUSIVE — not a clean bill of health. No indicators were found, "
+                    "but threat-intelligence was incomplete on this scan: VirusTotal (the "
+                    "verdict-critical source) did not return, so this artifact could not be "
+                    "fully checked. Re-scan to resolve."
+                )
+        elif unconfigured:
             all_reasons.append(
-                "⚠ INCONCLUSIVE — not a clean bill of health. No indicators were found, "
-                "but threat-intelligence was incomplete on this scan: VirusTotal (the "
-                "verdict-critical source) did not return, so this artifact could not be "
-                "fully checked. Re-scan to resolve."
+                "⚠ No antivirus consensus was consulted — this deployment has no "
+                "VirusTotal key configured. The finding below comes from local analysis "
+                "alone, and reputation data could change it."
             )
         else:
             all_reasons.append(

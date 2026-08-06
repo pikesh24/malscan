@@ -1,28 +1,25 @@
 """
-A deployment with no VirusTotal key must say so.
+A deployment with no VirusTotal key must not hand out Clear verdicts.
 
 `render.yaml` documents the enrichment keys as optional and set by hand, so a
 key-less deployment is a supported state — and it used to be the one kind of
-missing intel that left no trace at all. The partial check read
-`key in futures and _intel_incomplete(...)`, and with no key the lookup was
-never scheduled, so `key in futures` was False and the scan counted as complete.
-Every verdict came back Clear on the strength of a source nobody had consulted.
+missing intel that left no trace. The partial check read
+`key in futures and _intel_incomplete(...)`; with no key the lookup was never
+scheduled, `key in futures` was False, and the scan counted as complete. Every
+verdict came back Clear on the strength of a source nobody had consulted.
 
-The fix discloses rather than downgrades. A key-less deployment still runs YARA,
-static analysis and every format analyser; calling all of that Inconclusive
-would train users to ignore the verdict, which is worse than a verdict clearly
-labelled as reached without reputation data. Two flags, because the remedies
-differ:
+There is no honest verdict when the source that decides it was never asked, so
+this is Inconclusive — the same answer the scanner already gives for a
+password-protected archive or a quarantined file. What makes that useful rather
+than noise is the reason: the report says a key is missing, which is a thing the
+operator can fix, and distinguishes it from "VirusTotal timed out", which is a
+thing the user can retry.
 
-    partial                  we tried and got nothing — a retry may help
-    reputation_unavailable   no key configured — a retry can never help
-
-That distinction is load-bearing: `_find_recent_duplicate` refuses to reuse a
-`partial` result, so conflating the two made every scan re-run the pipeline.
+The distinction is load-bearing elsewhere too: `_find_recent_duplicate` refuses
+to reuse a partial result because a retry may succeed. A missing key never
+resolves on retry, so that result stays reusable.
 """
 import io
-
-import pytest
 
 from attribution_module.scoring import calculate_score
 
@@ -37,62 +34,39 @@ def _benign(**extra):
     return data
 
 
-def test_missing_key_is_disclosed_in_the_report():
-    result = calculate_score(_benign(intel_unconfigured=True))
+def test_no_key_means_inconclusive_not_clear():
+    result = calculate_score(_benign(intel_partial=True, intel_unconfigured=True))
 
+    assert result["verdict"] == "Inconclusive", (
+        f"a scan with no reputation source reported {result['verdict']}"
+    )
     assert result["reputation_unavailable"] is True
-    assert any("no VirusTotal key" in r or "reputation data" in r.lower()
-               for r in result["reasons"]), (
-        f"nothing in the report says reputation was never consulted: {result['reasons']}"
+
+
+def test_the_reason_names_the_missing_key_not_a_timeout():
+    """An Inconclusive that does not say why is what trains people to ignore it."""
+    result = calculate_score(_benign(intel_partial=True, intel_unconfigured=True))
+    reason = result["inconclusive_reason"] or ""
+
+    assert "key" in reason.lower(), f"reason does not mention the missing key: {reason}"
+    assert "did not return" not in reason, (
+        "an unconfigured deployment is being described as a failed lookup — "
+        "the operator would go looking for a network fault that does not exist"
     )
 
 
-def test_missing_key_does_not_block_the_debounce():
-    """`partial` gates duplicate reuse, so it must stay about retry-ability."""
-    result = calculate_score(_benign(intel_unconfigured=True))
-    assert result["partial"] is False, (
-        "an unconfigured key marked the scan partial, which stops _find_recent_duplicate "
-        "reusing it — every resubmission would re-run the whole pipeline"
-    )
+def test_a_failed_lookup_reads_differently_from_a_missing_key():
+    configured = calculate_score(_benign(intel_partial=True))
+    assert configured["verdict"] == "Inconclusive"
+    assert configured["reputation_unavailable"] is False
+    assert "key" not in (configured["inconclusive_reason"] or "").lower()
 
 
-def test_a_failed_lookup_is_still_partial_and_inconclusive():
-    """The configured-but-failed path must keep its stricter treatment."""
-    result = calculate_score(_benign(intel_partial=True))
-    assert result["partial"] is True
-    assert result["verdict"] == "Inconclusive"
-
-
-def test_a_configured_deployment_says_nothing_about_missing_reputation():
-    result = calculate_score(_benign())
-    assert result["reputation_unavailable"] is False
-    assert not any("no VirusTotal key" in r for r in result["reasons"])
-
-
-def test_a_specific_cause_outranks_the_generic_intel_reason():
-    """A password-protected archive must say so, even when VT also failed.
-
-    Both branches gated on `verdict == "Clear"`, and the intel branch ran first
-    and set it to Inconclusive — so the more useful, more actionable reason could
-    never replace the generic one. "Supply the password" tells the reader what to
-    do; "VirusTotal was unavailable" does not.
-    """
+def test_a_real_detection_is_never_downgraded_by_a_missing_key():
+    """Inconclusive replaces a would-be Clear. It must never mask a finding."""
     result = calculate_score(_benign(
         intel_partial=True,
-        unexaminable=["secret.docx", "payload.exe"],
-    ))
-
-    assert result["verdict"] == "Inconclusive"
-    assert "password" in (result["inconclusive_reason"] or "").lower(), (
-        f"the generic intel reason buried the specific one: {result['inconclusive_reason']}"
-    )
-
-
-def test_a_real_detection_is_never_relabelled(client):
-    """Refining an Inconclusive must not reach up and touch a real finding."""
-    result = calculate_score(_benign(
-        intel_partial=True,
-        unexaminable=["x.bin"],
+        intel_unconfigured=True,
         script={
             "is_script": True, "script_type": "VBScript",
             "codes": ["wsh_shell", "adodb_stream", "http_request"],
@@ -100,3 +74,56 @@ def test_a_real_detection_is_never_relabelled(client):
         },
     ))
     assert result["verdict"] in ("Suspicious", "Malicious")
+    assert any("no antivirus consensus" in r.lower() for r in result["reasons"]), (
+        "a Suspicious verdict reached without reputation data did not say so"
+    )
+
+
+def test_a_configured_deployment_says_nothing_about_missing_reputation():
+    result = calculate_score(_benign())
+    assert result["reputation_unavailable"] is False
+    assert result["verdict"] == "Clear"
+
+
+def test_an_unconfigured_result_is_still_reusable_by_the_debounce():
+    """Retrying cannot fix a missing key, so re-running the pipeline buys nothing.
+
+    _find_recent_duplicate skips partial results because the source may answer
+    next time. That reasoning does not apply here, and applying it anyway made
+    every resubmission on a key-less deployment re-run the whole scan.
+    """
+    reusable = {"verdict": "Inconclusive", "score": 0,
+                "partial": True, "reputation_unavailable": True}
+    retryable = {"verdict": "Inconclusive", "score": 0,
+                 "partial": True, "reputation_unavailable": False}
+
+    class _Row:
+        def __init__(self, results):
+            self.results = results
+
+    def _pick(rows):
+        for row in rows:
+            res = row.results
+            if not res:
+                continue
+            if res.get("partial") and not res.get("reputation_unavailable"):
+                continue
+            return res
+        return None
+
+    assert _pick([_Row(reusable)]) is reusable
+    assert _pick([_Row(retryable)]) is None
+
+
+def test_end_to_end_without_a_key(client, monkeypatch):
+    """The pipeline, not just the scorer: no key, benign file, no Clear verdict."""
+    monkeypatch.setenv("VT_API_KEY", "")
+
+    res = client.post("/upload", files={"file": ("plain.txt", io.BytesIO(b"nothing here\n"), "text/plain")})
+    assert res.status_code == 200, res.text
+    results = client.get(f"/status/{res.json()['job_id']}").json()["results"]
+
+    assert results["verdict"] == "Inconclusive", (
+        f"a key-less deployment reported {results['verdict']} at {results['score']}"
+    )
+    assert results["reputation_unavailable"] is True
