@@ -42,7 +42,6 @@ function AnalysisContent() {
     "QUERYING_THREAT_INTELLIGENCE", "CLUSTERING_SHARED_INFRASTRUCTURE",
     "SCORING & GENERATING_VERDICT"
   ]
-  const [currentStep, setCurrentStep] = useState(0)
 
   // Real Polling mixed with visual progression
   useEffect(() => {
@@ -61,7 +60,6 @@ function AnalysisContent() {
     // which then redirected to a non-existent report.
     if (!id) {
        clearInterval(visualInterval)
-       setRealStatus("NO JOB")
        return () => clearInterval(visualInterval)
     }
 
@@ -106,10 +104,13 @@ function AnalysisContent() {
     }
   }, [progress, router, id, target, fileUri, mimeType])
 
-  // Update current step text based on progress
-  useEffect(() => {
-    setCurrentStep(Math.min(Math.floor((progress / 100) * steps.length), steps.length - 1))
-  }, [progress, steps.length])
+  // Derived, not stored. This was an effect writing state that is a pure
+  // function of `progress`, which costs an extra render per tick — fifty times
+  // a second while the bar animates — and can drift from the value it mirrors.
+  const currentStep = Math.min(Math.floor((progress / 100) * steps.length), steps.length - 1)
+  // Same reasoning: with no job id there is nothing to poll, and that is knowable
+  // at render time rather than something to write into state from an effect.
+  const displayStatus = id ? realStatus : "NO JOB"
 
   // Calculate ETA (assuming ~45 seconds total for a scan)
   const etaSeconds = Math.max(0, Math.round(45 * (1 - progress / 100)));
@@ -134,7 +135,7 @@ function AnalysisContent() {
                     </div>
                     <div className="text-left md:text-right shrink-0">
                       <h2 className="text-[10px] font-bold tracking-[0.3em] uppercase text-gray-500 mb-1">STATUS</h2>
-                      <p className="text-xl font-bold text-[#FF3B00] animate-pulse">{realStatus}</p>
+                      <p className="text-xl font-bold text-[#FF3B00] animate-pulse">{displayStatus}</p>
                     </div>
                 </div>
             

@@ -16,6 +16,74 @@ import ApkAnalysis from "./ApkAnalysis"
 
 const GeoMap = dynamic(() => import("./GeoMap"), { ssr: false, loading: () => <div className="w-full h-[420px] bg-[#0d1117] flex items-center justify-center font-mono text-xs text-gray-600">LOADING MAP...</div> })
 
+// The payload backend/attribution_module/scoring.py returns. Precise where this
+// page makes decisions — `verdict` and `submitted_url` gate whether the user is
+// allowed to open an intercepted link — and loose only where the backend really
+// is open-ended. It was `any`, which is how a rename on either side could have
+// silently turned a gate into `undefined`.
+interface ReportData {
+    score?: number
+    verdict?: string
+    partial?: boolean
+    reputation_unavailable?: boolean
+    reasons?: string[]
+    family?: string
+    attribution?: string
+    file_hash?: string
+    original_filename?: string
+    submitted_url?: string | null
+    is_pe?: boolean
+    pe_sections?: { name: string; entropy: number; size?: number }[]
+    indicators?: { ips?: string[]; urls?: string[]; domains?: string[] }
+    score_breakdown?: { label: string; points: number }[]
+    risk_profile?: { key: string; label: string; value: number; description: string }[]
+    // Exactly GraphWidget's own GraphNode/GraphEdge — the widget is strict
+    // about `risk` and `relationship`, and the payload does supply both.
+    graph_nodes?: { id: string; label: string; type: string; risk: "high" | "medium" | "neutral" }[]
+    graph_edges?: { source: string; target: string; relationship: string }[]
+    apk_info?: Record<string, unknown> | null
+    archive_contents?: { name: string; is_pe?: boolean; ioc_count?: number }[]
+    archive_encrypted?: string[]
+    archive_truncated?: string | null
+    archive_unreadable?: string[]
+    archive_unsupported?: string | null
+    osint_summary?: {
+        virustotal?: { malicious: number; suspicious: number; harmless: number; undetected?: number } | null
+        // Flat fields as urlscan_client.py returns them, plus the raw `page`
+        // and `task` objects it passes through from the API.
+        urlscan?: {
+            error?: string
+            is_malicious?: boolean
+            page_title?: string
+            page_ip?: string
+            page_country?: string
+            page_server?: string
+            screenshot_url?: string
+            outgoing_domains?: string[]
+            page?: { url?: string }
+            task?: { domain?: string }
+        } | null
+        resource_chain?: { hosts?: ResourceHost[]; third_party_domains?: number; skipped?: boolean } | null
+        lat?: number | null
+        lon?: number | null
+        city?: string
+        region?: string
+        country?: string
+        country_code?: string
+        hosting?: string
+        asn?: string
+    }
+}
+
+interface ResourceHost {
+    host: string
+    // false when the host was observed loading but never reputation-checked —
+    // the chip styling distinguishes flagged / checked / unchecked.
+    checked?: boolean
+    virustotal?: { malicious?: number; suspicious?: number } | null
+    facets?: string[]
+}
+
 // --- MAIN PAGE COMPONENT ---
 function ReportContent() {
     const searchParams = useSearchParams()
@@ -29,7 +97,7 @@ function ReportContent() {
     const fileMimeType = searchParams.get("mimeType") || "*/*"
     const router = useRouter()
 
-    const [reportData, setReportData] = useState<any>(null)
+    const [reportData, setReportData] = useState<ReportData | null>(null)
     const [loading, setLoading] = useState(true)
     const [shareToast, setShareToast] = useState(false)
     const [isExporting, setIsExporting] = useState(false)
@@ -572,13 +640,13 @@ function ReportContent() {
                                     next to a clean score when in fact nothing had looked at them —
                                     that is how a flagged S3 bucket sat in a 0/100 report. Flagged,
                                     checked-clean and never-checked are now visibly different. */}
-                                {resourceChain?.hosts?.length > 0 ? (
+                                {(resourceChain?.hosts?.length ?? 0) > 0 ? (
                                     <div className="mt-4 pt-4 border-t border-gray-100">
                                         <span className="text-[10px] font-mono text-gray-400 uppercase">
-                                            Third-Party Resources ({resourceChain.hosts.length}):
+                                            Third-Party Resources ({resourceChain?.hosts?.length ?? 0}):
                                         </span>
                                         <div className="flex flex-wrap gap-1.5 mt-2">
-                                            {resourceChain.hosts.map((h: any) => {
+                                            {(resourceChain?.hosts ?? []).map((h: ResourceHost) => {
                                                 const mal = h.virustotal?.malicious || 0
                                                 const flagged = mal >= 2
                                                 const checked = h.checked || h.virustotal
@@ -671,7 +739,7 @@ function ReportContent() {
                                     </div>
                                 )}
                                 <div className="space-y-1.5 max-h-64 print:max-h-none overflow-y-auto print:overflow-visible pr-2 print:pr-0">
-                                    {archiveContents.map((f: any, i: number) => (
+                                    {archiveContents.map((f: { name: string; is_pe?: boolean; ioc_count?: number }, i: number) => (
                                         <div key={i} className="flex items-center justify-between font-mono text-[10px] py-2 px-3 bg-gray-50 border border-gray-100 rounded-md">
                                             <div className="flex items-center gap-2 min-w-0">
                                                 <Package size={12} className="text-gray-400 shrink-0"/>
@@ -679,7 +747,7 @@ function ReportContent() {
                                             </div>
                                             <div className="flex items-center gap-3 shrink-0 ml-4">
                                                 {f.is_pe && <span className="text-[8px] bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded-sm uppercase font-bold">PE</span>}
-                                                {f.ioc_count > 0 && <span className="text-[8px] text-[#FF3B00] font-bold">{f.ioc_count} IOCs</span>}
+                                                {(f.ioc_count ?? 0) > 0 && <span className="text-[8px] text-[#FF3B00] font-bold">{f.ioc_count} IOCs</span>}
                                             </div>
                                         </div>
                                     ))}

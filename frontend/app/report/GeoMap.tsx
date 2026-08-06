@@ -1,7 +1,12 @@
 "use client"
 
 import "leaflet/dist/leaflet.css"
-import { useEffect, useState } from "react"
+// Static imports, not require(). Leaflet touches `window` at module scope, which
+// is why these were deferred — but the only importer loads this file through
+// next/dynamic with ssr:false, so it never evaluates on the server and the
+// deferral bought nothing.
+import L from "leaflet"
+import { MapContainer, TileLayer, Marker, Popup, CircleMarker } from "react-leaflet"
 
 interface GeoMapProps {
     lat: number | null
@@ -15,19 +20,11 @@ interface GeoMapProps {
     ips?: string[]
 }
 
+// The `mounted` state that used to sit here delayed the first paint by a render
+// to avoid a hydration mismatch. next/dynamic({ ssr: false }) already guarantees
+// there is no server render to mismatch against, and supplies the loading state
+// this branch was duplicating.
 export default function GeoMap({ lat, lon, city, region, country, countryCode, isp, asn, ips }: GeoMapProps) {
-    const [mounted, setMounted] = useState(false)
-
-    useEffect(() => { setMounted(true) }, [])
-
-    if (!mounted) {
-        return (
-            <div className="w-full h-[340px] print:h-auto print:py-10 bg-[#0d1117] print:bg-white flex items-center justify-center font-mono text-xs text-gray-600 print:text-gray-400">
-                LOADING MAP...
-            </div>
-        )
-    }
-
     if (lat === null || lon === null) {
         return (
             <div className="w-full h-[340px] print:h-auto print:py-10 bg-[#0d1117] print:bg-white flex items-center justify-center font-mono text-xs text-gray-600 print:text-gray-400 tracking-widest">
@@ -40,8 +37,6 @@ export default function GeoMap({ lat, lon, city, region, country, countryCode, i
 }
 
 function GeoMapInner({ lat, lon, city, region, country, countryCode, isp, asn, ips }: GeoMapProps & { lat: number; lon: number }) {
-    const L = require("leaflet")
-    const { MapContainer, TileLayer, Marker, Popup, CircleMarker } = require("react-leaflet")
 
     // Custom red icon for the marker
     const redIcon = new L.DivIcon({

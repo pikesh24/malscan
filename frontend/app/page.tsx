@@ -31,6 +31,19 @@ export default function LandingPage() {
   const [isSubmittingUrl, setIsSubmittingUrl] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  // The hosted backend sleeps on the free tier and takes ~45s to wake, during
+  // which a submission looks like a hang. Say what is happening instead.
+  const [wakingBackend, setWakingBackend] = useState(false)
+
+  const withColdStartHint = async <T,>(work: () => Promise<T>): Promise<T> => {
+    const timer = setTimeout(() => setWakingBackend(true), 6000)
+    try {
+      return await work()
+    } finally {
+      clearTimeout(timer)
+      setWakingBackend(false)
+    }
+  }
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -43,7 +56,7 @@ export default function LandingPage() {
     setIsUploading(true)
     setUploadError(null)
     try {
-      const jobId = await submitFileForScan(file, file.name)
+      const jobId = await withColdStartHint(() => submitFileForScan(file, file.name))
       router.push(`/analysis?id=${jobId}`)
     } catch (err) {
       // This used to navigate to a demo job id, which raced to 100% and landed
@@ -69,11 +82,15 @@ export default function LandingPage() {
     setUrlError(null)
     setIsSubmittingUrl(true)
     try {
-      const jobId = await submitUrlForScan(trimmed)
+      const jobId = await withColdStartHint(() => submitUrlForScan(trimmed))
       router.push(`/analysis?id=${jobId}`)
     } catch (err) {
       console.error(err)
-      setUrlError("Submission failed. Is the backend running?")
+      setUrlError(
+        err instanceof Error && err.message
+          ? `Could not scan this URL: ${err.message}. Nothing was analysed.`
+          : "Submission failed — nothing was analysed. Is the backend running?"
+      )
     }
     setIsSubmittingUrl(false)
   }
@@ -128,6 +145,12 @@ export default function LandingPage() {
           </div>
           <div className="absolute top-0 h-full w-1 bg-[#FF3B00] opacity-50 group-hover:animate-scan"></div>
         </motion.div>
+        {wakingBackend && (
+          <p className="w-full max-w-xl font-mono text-[10px] text-gray-500 tracking-wider leading-relaxed">
+            WAKING THE SCANNER — the hosted backend sleeps when idle and can take up
+            to a minute to start. Nothing has been analysed yet.
+          </p>
+        )}
         {uploadError && (
           <p className="w-full max-w-xl font-mono text-[10px] text-[#FF3B00] tracking-wider leading-relaxed">
             {uploadError}

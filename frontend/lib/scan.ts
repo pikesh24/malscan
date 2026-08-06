@@ -1,10 +1,20 @@
 import { apiUrl } from "./config"
 
+// "Backend offline or error" was the message for every failure, including the
+// two the user can actually act on. The caller shows this text verbatim, so it
+// needs to name the real cause.
+function submissionError(status: number): Error {
+  if (status === 413) return new Error("this file is larger than the 50 MB limit")
+  if (status === 429) return new Error("too many scans in the last minute — wait a moment and retry")
+  if (status === 0) return new Error("the scanner could not be reached")
+  return new Error(`the scanner returned an error (HTTP ${status})`)
+}
+
 export async function submitFileForScan(file: File | Blob, filename = "scan_target"): Promise<string> {
   const formData = new FormData()
   formData.append("file", file, filename)
   const res = await fetch(apiUrl("/api/upload"), { method: "POST", body: formData })
-  if (!res.ok) throw new Error("Backend offline or error")
+  if (!res.ok) throw submissionError(res.status)
   const data = await res.json()
   return data.job_id
 }
@@ -15,7 +25,7 @@ export async function submitUrlForScan(url: string): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   })
-  if (!res.ok) throw new Error("Backend error")
+  if (!res.ok) throw submissionError(res.status)
   const data = await res.json()
   return data.job_id
 }
