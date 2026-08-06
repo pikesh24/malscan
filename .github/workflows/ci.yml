@@ -39,7 +39,8 @@ jobs:
         run: |
           pip install -r requirements.txt \
                       -r analysis_engine/requirements.txt \
-                      -r attribution_module/requirements.txt
+                      -r attribution_module/requirements.txt \
+                      -r requirements-dev.txt
 
       - name: Run tests
         env:

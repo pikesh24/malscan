@@ -1,2 +1,18 @@
+# Test-only dependencies.
+#
+# These were never declared anywhere: they arrived on the developer machine by
+# hand and the suite ran fine locally for months, so nothing pointed out that a
+# clean checkout could not run a single test. The first CI run said exactly
+# that — "No module named pytest" — and it was right.
+#
+# Install alongside the runtime requirements:
+#   pip install -r requirements.txt \
+#               -r analysis_engine/requirements.txt \
+#               -r attribution_module/requirements.txt \
+#               -r requirements-dev.txt
 pytest==8.2.2
+
+# Not imported by any test directly, which is why it is easy to miss: Starlette's
+# TestClient is built on httpx and raises at construction without it. Every
+# `client` fixture in the suite depends on this line.
 httpx==0.27.0
