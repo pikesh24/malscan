@@ -63,20 +63,20 @@ def test_budget_hosting_is_weak_but_bulletproof_hosting_is_not():
         "osint": {"geoip": {"countryCode": "RU", "country": "Russia",
                             "asn": "AS206728 Media Land LLC"}},
     })
-    # country 5 + budget 5 — nowhere near the 35-point Suspicious threshold
-    assert budget["score"] == 10
+    # budget 5 — nowhere near the 35-point Suspicious threshold
+    assert budget["score"] == 5
     assert budget["verdict"] == "Clear"
     assert bulletproof["score"] > budget["score"]
 
 
 def test_country_alone_barely_moves_the_score():
-    """8.3% of the top 10,000 sit in a listed country, and for CDN-fronted sites
-    the field reports an anycast edge rather than the host. Geography is not
-    evidence."""
+    """Geography alone is not evidence — country-based scoring has been removed
+    to eliminate geographic bias. A domain hosted in any country without other
+    suspicious signals should score 0."""
     result = calculate_score({
         "osint": {"geoip": {"countryCode": "CN", "country": "China"}},
     })
-    assert result["score"] == 5
+    assert result["score"] == 0
     assert result["verdict"] == "Clear"
 
 
@@ -398,7 +398,6 @@ def test_infrastructure_alone_cannot_reach_malicious():
     })
     assert result["verdict"] != "Malicious"
     # Down-weighted, not suppressed — the findings still reach the report.
-    assert any("high-risk country" in r for r in result["reasons"])
     assert any("bulletproof" in r for r in result["reasons"])
     assert any("Registrar" in r for r in result["reasons"])
 
@@ -520,12 +519,15 @@ def test_cdn_in_a_listed_country_is_not_scored_on_geography():
 
 
 def test_direct_hosting_still_reports_its_country():
-    """The fix must not blind the check where geolocation is meaningful."""
+    """Country data is still collected in osint_summary for analyst review,
+    but geographic location alone does not contribute to scoring."""
     result = calculate_score({
         "osint": {"geoip": {"countryCode": "RU", "country": "Russia",
                             "asn": "AS206728 Media Land LLC", "isp": "Media Land LLC"}},
     })
     joined = " ".join(result["reasons"])
-    assert "high-risk country" in joined
     assert "bulletproof" in joined
+    # Country is still reported in osint_summary for context
+    assert result["osint_summary"]["country"] == "Russia"
+    assert result["osint_summary"]["country_code"] == "RU"
     assert result["osint_summary"]["anycast_cdn"] is None

@@ -89,10 +89,6 @@ BUDGET_HOSTING_ASNS = {
 
 SUSPICIOUS_ASNS = BULLETPROOF_ASNS | BUDGET_HOSTING_ASNS  # kept for _build_graph
 
-# Where infrastructure sits is weak evidence and easily misread — see
-# _check_geoip for the measurement behind the low weight.
-HIGH_RISK_COUNTRIES = {"RU", "KP", "CN", "IR", "BY", "SY"}
-
 # Anycast CDNs and reverse proxies. An IP behind one of these resolves to
 # whichever edge node happens to be nearest the lookup, so the "country" is where
 # the CDN answered from — not where the site is hosted.
@@ -187,8 +183,7 @@ def _build_graph(iocs: dict, geoip: dict, whois: dict):
 
     country_code = (geoip.get("countryCode") or geoip.get("country_code") or "").upper()
     if country_code:
-        risk = "high" if country_code in HIGH_RISK_COUNTRIES else "neutral"
-        add_node(country_code, geoip.get("country", country_code), "country", risk)
+        add_node(country_code, geoip.get("country", country_code), "country", "neutral")
         if asn_raw:
             edges.append({"source": asn_raw.split()[0], "target": country_code, "relationship": "located_in"})
 
@@ -396,10 +391,6 @@ def _check_geoip(geoip):
             f"hidden — the geolocation shown is the nearest {cdn} edge, not the host."
         )
         return score, reasons
-
-    if cc in HIGH_RISK_COUNTRIES:
-        score += 5
-        reasons.append(f"Infrastructure in high-risk country: {cc} ({geoip.get('country','')}).")
 
     asn_id = asn_raw.split()[0].upper() if asn_raw else ""
     if asn_id in BULLETPROOF_ASNS:
