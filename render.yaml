@@ -1,5 +1,5 @@
-# Render Blueprint — provisions the MALSCAN backend + Postgres in one shot.
-# Dashboard: New + → Blueprint → pick this repo. Docs: https://render.com/docs/blueprint-spec
+# Render Blueprint — provisions the MALSCAN backend. Dashboard: New + →
+# Blueprint → pick this repo. Docs: https://render.com/docs/blueprint-spec
 #
 # Notes:
 # - rootDir is backend/ so uvicorn runs with cwd=backend/ (the app's relative
@@ -12,6 +12,21 @@
 #   it returns a clean 501 and everything else works.
 # - API keys (VT_API_KEY, URLSCAN_API_KEY, ABUSEIPDB_API_KEY, ABUSECH_AUTH_KEY)
 #   are optional and set manually in the dashboard — never committed.
+#
+# NO DATABASE IS PROVISIONED — deliberately. This blueprint used to declare a
+# free Postgres and bind it to MALSCAN_DB_URL. Render's free databases carry a
+# hard calendar expiry (not idle-sleep like the free web service): malscan-db
+# expired, was suspended, and the API then crash-looped at startup, because
+# init_db()'s create_all in app/database.py is not wrapped in try/except. That
+# is the correct behaviour for a service that requires a database — so the fix
+# is to stop requiring one. With MALSCAN_DB_URL unset, database.py falls back
+# to sqlite:///./malscan.db on the instance's ephemeral disk. Scanning is
+# entirely unaffected; what is lost on each redeploy is scan history, old
+# /report links, and the accumulated cross-job indicator index (so clustering
+# only sees scans since the last deploy). That is an accepted tradeoff for a
+# zero-budget demo deployment. To reinstate persistence later, re-add a
+# `databases:` block and the MALSCAN_DB_URL binding below — psycopg2-binary is
+# still in requirements.txt, so no code change is needed.
 
 services:
   - type: web
@@ -32,10 +47,6 @@ services:
       # Duplicated in .python-version at the repo root; keep them in step.
       - key: PYTHON_VERSION
         value: "3.13.4"
-      - key: MALSCAN_DB_URL
-        fromDatabase:
-          name: malscan-db
-          property: connectionString
       # APK WebView origin (Capacitor serves from https://localhost). Add your
       # hosted-web domain here only if the site ever calls the API cross-origin
       # (with the Next.js /api rewrite proxy it does not need CORS).
@@ -57,7 +68,3 @@ services:
       # each run. Must be one of GET /api/v1/availableCountries/.
       - key: URLSCAN_COUNTRY
         value: us
-
-databases:
-  - name: malscan-db
-    plan: free
