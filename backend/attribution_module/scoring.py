@@ -1084,6 +1084,16 @@ _NATURALLY_COMPRESSED = {
     "7-Zip Archive",
     "RAR Archive",
     "Microsoft Cabinet (CAB) File",
+    # JPEG's DCT+Huffman coding and PNG's DEFLATE stream are exactly as
+    # inherently high-entropy as the archive formats above — that's what
+    # compression is. Every photo and screenshot anyone scanned was paying a
+    # real, meaningless "appears to be packed or encrypted" penalty (plus
+    # frequently a base64-blob hit from embedded EXIF/XMP metadata) for
+    # nothing more than being a JPEG. These are the only two image types
+    # static_analyzer.py's magic-byte table currently names; an unrecognised
+    # image would fall through as "Unknown" and correctly still be checked.
+    "JPEG Image",
+    "PNG Image",
 }
 
 _ENTROPY_BASELINE_STRINGS = {
